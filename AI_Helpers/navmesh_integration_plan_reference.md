@@ -4,7 +4,9 @@
 
 This plan describes how to generate navigation meshes for smooth (Transvoxel) voxel terrain by feeding the triangle mesh already produced by the godot-voxel mesher into Recast's pipeline, then registering the result with Godot's NavigationServer3D.
 
-The core architectural decision is **lightly-coupled post-mesher dispatch**: at the end of `MeshBlockTask::run()` (on a worker thread), the collision triangle data is extracted and handed to a `NavMeshManager`. The manager caches per-chunk triangle data, tracks neighbor readiness, manages an obstacle registry, and dispatches `NavMeshBuildTask`s to the thread pool when a chunk and its neighbors are all available. Final NavigationServer3D calls happen on the main thread.
+**Scope:** This plan targets `VoxelTerrain` (fixed LOD) only. `VoxelLodTerrain` support is deferred to future work.
+
+The core architectural decision is **lightly-coupled post-mesher dispatch**: inside `MeshBlockTask::build_mesh()` (on a worker thread), the collision triangle data is extracted and handed to a `NavMeshManager`. The manager caches per-chunk triangle data, tracks neighbor readiness, manages an obstacle registry, and dispatches `NavMeshBuildTask`s to the thread pool when a chunk and its neighbors are all available. Final NavigationServer3D calls happen on the main thread.
 
 This approach:
 - **Supports full threading** — nav data capture and Recast builds happen on worker threads; only NavigationServer3D calls touch the main thread.
@@ -23,13 +25,14 @@ This works because `NavigationAgent3D` queries the server directly via `query_pa
 
 ### Exposed Properties
 
-Properties are flat on the terrain node (`VoxelTerrain` / `VoxelLodTerrain`), organized into inspector groups via `ADD_GROUP`. This matches the existing pattern for collision settings (`generate_collisions`, `collision_layer`, `collision_mask`, `collision_margin`).
+Properties are flat on the terrain node (`VoxelTerrain`), organized into inspector groups via `ADD_GROUP`. This matches the existing pattern for collision settings (`generate_collisions`, `collision_layer`, `collision_mask`, `collision_margin`).
+
+Navigation range is NOT a terrain property — it is controlled by `VoxelNavViewer` nodes (see [Navigation Viewer](#navigation-viewer) below).
 
 ```
 ADD_GROUP("Navigation", "")
   generate_navigation         : bool    // Master toggle (like generate_collisions)
   navigation_layers           : int     // PROPERTY_HINT_LAYERS_3D_NAVIGATION
-  nav_range                   : float   // Default 128.0; independent from mesh loading range
 
 ADD_GROUP("Navigation Agent", "nav_agent_")
   nav_agent_radius            : float   // Default 0.4 → drives cfg.cs and cfg.walkableRadius
@@ -80,7 +83,7 @@ When any navigation property changes, the derived `rcConfig` is recomputed and s
 Obstacles are runtime-only and exposed as methods on the terrain node, forwarding to `NavMeshManager`:
 
 ```cpp
-// In VoxelTerrain / VoxelLodTerrain _bind_methods():
+// In VoxelTerrain _bind_methods():
 ClassDB::bind_method(D_METHOD("add_nav_obstacle", "collision_mesh", "transform"), &Self::add_nav_obstacle);
 ClassDB::bind_method(D_METHOD("remove_nav_obstacle", "obstacle_id"), &Self::remove_nav_obstacle);
 ClassDB::bind_method(D_METHOD("update_nav_obstacle_transform", "obstacle_id", "transform"),
@@ -104,13 +107,14 @@ The minimal setup for a developer:
 
 1. **Enable navigation** on the terrain node: set `generate_navigation = true`.
 2. **Set agent parameters**: `nav_agent_radius`, `nav_agent_height`, `nav_agent_max_climb`, `nav_agent_max_slope`.
-3. **Add a NavigationAgent3D** to their character (standard Godot workflow).
-4. Pathfinding works automatically — the terrain's internal regions are on the World3D's default navigation map, same map the agent queries.
+3. **Add a `VoxelNavViewer`** to the character (or any node near where navigation is needed). This controls where navmesh is generated.
+4. **Add a `NavigationAgent3D`** to the character (standard Godot workflow).
+5. Pathfinding works automatically — the terrain's internal regions are on the World3D's default navigation map, same map the agent queries.
 
 Optional:
 - Tune advanced Recast parameters if default quality isn't sufficient.
 - Call `add_nav_obstacle()` for dynamic obstacles (trees, buildings, etc.).
-- Set `nav_range` to limit navigation coverage to a radius smaller than the view distance.
+- Adjust `VoxelNavViewer::nav_distance` to control how far around each viewer navmesh is generated.
 
 ```
 Developer                    Terrain Node              NavMeshManager         NavigationServer3D
@@ -139,6 +143,32 @@ add_nav_obstacle(mesh, xform)
                                                        → dispatches rebuilds
 ```
 
+### Navigation Viewer
+
+Navigation range is controlled by a dedicated `VoxelNavViewer` node rather than a flat property on the terrain. This follows the `VoxelViewer` pattern (`terrain/voxel_viewer.h`) — developers place a `VoxelNavViewer` on any agent that needs navigation, and navmesh is generated within that viewer's range.
+
+**Rationale:** A developer may want navigation around specific agents without the cost of generating navmesh everywhere the terrain is visible. Placing a `VoxelNavViewer` on an agent is a lightweight way to request navigation — it's distinct from `VoxelViewer` (which controls mesh generation) because you don't want the performance penalty of actually meshing around every agent that needs pathfinding.
+
+**Properties:**
+```
+VoxelNavViewer (inherits Node3D)
+  nav_distance       : unsigned int  // Default 64; radius in world units
+  enabled_in_editor  : bool          // Default false
+```
+
+**Lifecycle** (mirrors `VoxelViewer`):
+- `NOTIFICATION_ENTER_TREE`: registers with `NavMeshManager`'s nav viewer registry
+- `NOTIFICATION_EXIT_TREE`: deferred unregistration (for reparenting safety, matching `VoxelViewer`'s pattern)
+- `NOTIFICATION_TRANSFORM_CHANGED`: updates position in registry
+
+**NavMeshManager integration:**
+- `NavMeshManager` maintains a `StdVector<NavViewerState>` with each viewer's position and distance
+- A `Mutex _viewer_mutex` protects the registry (viewers update on main thread, `_is_within_nav_range()` reads on worker threads)
+- `_is_within_nav_range(chunk_pos)` returns true if the chunk's world center is within `nav_distance` of **any** registered `VoxelNavViewer`
+- When a `VoxelNavViewer` moves or its distance changes, the manager can dispatch builds for newly-in-range chunks and remove regions for chunks that left range
+
+**How `VoxelNavViewer` finds the `NavMeshManager`:** The viewer walks up the scene tree to find a `VoxelTerrain` ancestor (or uses a similar discovery mechanism). If no terrain with `generate_navigation = true` exists, the viewer does nothing.
+
 ---
 
 ## File Organization
@@ -151,6 +181,8 @@ terrain/navigation/
   nav_mesh_manager.cpp
   nav_mesh_build_task.h    — NavMeshBuildTask (IThreadedTask, Recast pipeline)
   nav_mesh_build_task.cpp
+  voxel_nav_viewer.h       — VoxelNavViewer node (controls nav generation range)
+  voxel_nav_viewer.cpp
 ```
 
 Add `"terrain/navigation/*.cpp"` to the source list in `common.py`, gated on a new build option `voxel_navigation`:
@@ -237,16 +269,33 @@ public:
     // Recomputed by the terrain node when any nav property changes,
     // then stored here. See "Developer-Facing Design > Property derivation".
     rcConfig recast_config;         // Derived Recast build parameters
-    float nav_range = 128.0f;      // Independent from mesh loading range
     uint32_t navigation_layers = 1;
     bool filter_low_hanging = true;
     bool filter_ledge_spans = true;
     bool filter_low_height_spans = true;
 
+    // Chunk geometry info (set by terrain node on manager creation)
+    int mesh_block_size = 16;      // In voxels (from VoxelTerrain::get_mesh_block_size())
+
     // Reference to the World3D navigation map (set by terrain node on enter_tree)
     RID _nav_map_rid;
 
+    // --- Navigation viewer registry ---
+    // VoxelNavViewer nodes register/unregister here (main thread).
+    // _is_within_nav_range() reads this under _viewer_mutex (worker threads).
+    struct NavViewerState {
+        Vector3 world_position;
+        unsigned int nav_distance = 64;
+    };
+    void register_nav_viewer(int viewer_id, NavViewerState state);
+    void unregister_nav_viewer(int viewer_id);
+    void update_nav_viewer(int viewer_id, Vector3 position);
+
 private:
+    // --- Lock ordering: _cache_mutex → _obstacle_mutex → _viewer_mutex ---
+    // All code paths MUST acquire locks in this order to prevent deadlocks.
+    // See "Lock Ordering" section below.
+
     // Per-chunk cached triangle data. Written by worker threads after meshing,
     // read during dispatch (both under _cache_mutex).
     struct NavChunkEntry {
@@ -267,6 +316,10 @@ private:
     HashMap<int, ObstacleEntry> _obstacles;
     int _next_obstacle_id = 0;
 
+    // Navigation viewer positions. Modified on main thread, read by worker threads.
+    Mutex _viewer_mutex;
+    HashMap<int, NavViewerState> _nav_viewers;
+
     // Active NavigationServer3D regions. Main thread only.
     HashMap<Vector3i, RID> _region_rids;
 
@@ -276,10 +329,15 @@ private:
 
     // Helpers (all called under _cache_mutex)
     bool _are_neighbors_ready(Vector3i chunk_pos) const;
-    bool _is_within_nav_range(Vector3i chunk_pos) const;
+    bool _is_within_nav_range(Vector3i chunk_pos) const; // also acquires _viewer_mutex
     void _try_dispatch_nav_build(Vector3i chunk_pos);
-    void _dispatch_nav_build(Vector3i chunk_pos, uint32_t generation);
+    void _dispatch_nav_build(Vector3i chunk_pos, uint32_t generation); // also acquires _obstacle_mutex
     StdVector<Vector3i> _get_affected_chunks(const AABB &aabb);
+
+    // Coordinate conversion helpers
+    Vector3 _chunk_center_world(Vector3i chunk_pos) const;
+    AABB _chunk_aabb_world(Vector3i chunk_pos) const;
+    Transform3D _chunk_to_world(Vector3i chunk_pos) const;
 };
 ```
 
@@ -362,6 +420,55 @@ void NavMeshManager::_try_dispatch_nav_build(Vector3i chunk_pos) {
 2. Remove from `_region_rids` and `_applied_generations`.
 3. Remove from `_chunk_cache` (under `_cache_mutex`).
 
+### Lock Ordering
+
+The NavMeshManager uses three mutexes. To prevent deadlocks, all code paths **must** acquire locks in this fixed order:
+
+```
+_cache_mutex → _obstacle_mutex → _viewer_mutex
+```
+
+**Why this matters:** Two code paths touch multiple mutexes:
+1. `on_mesh_built()` (worker thread): acquires `_cache_mutex`, then `_dispatch_nav_build()` acquires `_obstacle_mutex` for the obstacle snapshot, and `_is_within_nav_range()` acquires `_viewer_mutex`.
+2. `add_obstacle()` (main thread): needs to update the obstacle registry AND dispatch nav builds (which requires `_cache_mutex` for the chunk cache).
+
+If `add_obstacle()` locked `_obstacle_mutex` first and then `_cache_mutex`, it would deadlock with a concurrent `on_mesh_built()` that holds `_cache_mutex` and wants `_obstacle_mutex`. By always acquiring `_cache_mutex` first, both paths use the same order:
+
+```cpp
+// add_obstacle() — correct lock order
+void NavMeshManager::add_obstacle(...) {
+    MutexLock cache_lock(_cache_mutex);
+    {
+        MutexLock obs_lock(_obstacle_mutex);
+        // update obstacle registry
+    }
+    // dispatch nav builds for affected chunks (cache_mutex still held)
+}
+```
+
+### Chunk Coordinate Helpers
+
+`NavMeshManager` stores `mesh_block_size` (set by the terrain node at creation time from `VoxelTerrain::get_mesh_block_size()`). This enables chunk-to-world coordinate conversions:
+
+```cpp
+// mesh_block_size is in voxels (typically 16 or 32).
+// In godot-voxel, 1 voxel = 1 world unit (no scale factor).
+
+Vector3 NavMeshManager::_chunk_center_world(Vector3i chunk_pos) const {
+    return to_vec3(chunk_pos * mesh_block_size) + Vector3(mesh_block_size, mesh_block_size, mesh_block_size) * 0.5f;
+}
+
+AABB NavMeshManager::_chunk_aabb_world(Vector3i chunk_pos) const {
+    return AABB(to_vec3(chunk_pos * mesh_block_size), Vector3(mesh_block_size, mesh_block_size, mesh_block_size));
+}
+
+Transform3D NavMeshManager::_chunk_to_world(Vector3i chunk_pos) const {
+    return Transform3D(Basis(), to_vec3(chunk_pos * mesh_block_size));
+}
+```
+
+These follow the same pattern as `VoxelMeshBlockVT` (`terrain/fixed_lod/voxel_mesh_block_vt.h:35`), which computes `_position_in_voxels = bpos * size` and uses it as a translation in `Transform3D`.
+
 ---
 
 ## MeshingDependency Modification
@@ -393,43 +500,51 @@ struct MeshingDependency {
 
 When `MeshingDependency::reset()` is called (mesher/generator changed), the old dependency is invalidated. In-flight `MeshBlockTask`s self-cancel via `is_cancelled()`. The NavMeshManager itself remains valid — only the meshing pipeline is invalidated. New mesh tasks with the new dependency will produce fresh triangle data and feed it to the same NavMeshManager.
 
-Both `VoxelTerrain` and `VoxelLodTerrain` need to pass their `NavMeshManager` (if any) through `MeshingDependency::reset()` calls.
+`VoxelTerrain` passes its `NavMeshManager` (if any) through `MeshingDependency::reset()` calls.
 
 ---
 
 ## MeshBlockTask Hook Point
 
-At the end of `MeshBlockTask::run()`, after `build_mesh()` completes, a small block extracts collision triangle data and forwards it to the NavMeshManager. The nav_mesh_manager pointer is nullable — if null, no nav work happens, keeping the coupling optional.
+Inside `MeshBlockTask::build_mesh()`, after the detail texture scheduling block (~line 579), a small block extracts collision triangle data and forwards it to the NavMeshManager. This placement matches the existing pattern where detail texture scheduling also lives inside `build_mesh()`. The nav_mesh_manager pointer is nullable — if null, no nav work happens, keeping the coupling optional.
 
-**Data extraction uses the Transvoxel thread-local cache** (`get_mesh_cache_from_current_thread()`) for direct access to raw `StdVector<Vector3f>` vertices — avoiding Godot Variant array overhead. The bounds come from `_surfaces_output.collision_surface.submesh_vertex_end/submesh_index_end` to exclude LOD transition mesh vertices.
+**Why the Transvoxel thread-local cache instead of `collision_surface.positions`:** The Transvoxel mesher does NOT populate `CollisionSurface::positions` or `CollisionSurface::indices` directly. Instead, it sets `submesh_vertex_end` and `submesh_index_end` as bounds into the render mesh arrays (see `voxel_mesher_transvoxel.cpp:350`). The thread-local cache (`get_mesh_cache_from_current_thread()`) provides direct access to raw `StdVector<Vector3f>` vertices — avoiding Godot Variant array overhead. The bounds from `submesh_vertex_end/submesh_index_end` exclude LOD transition mesh vertices.
 
 ```cpp
-// In MeshBlockTask::run(), after build_mesh():
+// In MeshBlockTask::build_mesh(), after the detail texture scheduling block:
 #ifdef MODULE_NAVIGATION_3D_ENABLED
 if (meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0) {
-    const VoxelMesher::Output::CollisionSurface &col = _surfaces_output.collision_surface;
+    // Explicit Transvoxel mesher check — do NOT rely on implicit mesher type.
+    // Without this, the thread-local cache could contain stale data from a
+    // previous task if a non-Transvoxel mesher is used with navigation enabled.
+    Ref<VoxelMesherTransvoxel> nav_transvoxel_mesher;
+    if (zylann::godot::try_get_as(mesher, nav_transvoxel_mesher)) {
+        const VoxelMesher::Output::CollisionSurface &col = _surfaces_output.collision_surface;
 
-    if (_surfaces_output.surfaces.size() > 0 && col.submesh_vertex_end > 0) {
-        NavChunkData nav_data;
-        nav_data.chunk_position = mesh_block_position;
-        // TODO: compute world_aabb from chunk position and mesh block size
+        if (_surfaces_output.surfaces.size() > 0 && col.submesh_vertex_end > 0) {
+            NavChunkData nav_data;
+            nav_data.chunk_position = mesh_block_position;
+            nav_data.world_aabb = AABB(
+                to_vec3(mesh_block_position * mesh_block_size),
+                to_vec3(mesh_block_size));
 
-        // Use thread-local mesh cache for raw float data (no Variant overhead).
-        // This follows the same pattern as RenderDetailTextureTask (mesh_block_task.cpp:539).
-        const transvoxel::MeshArrays &mesh_arrays =
-            VoxelMesherTransvoxel::get_mesh_cache_from_current_thread();
+            // Use thread-local mesh cache for raw float data (no Variant overhead).
+            // This follows the same pattern as RenderDetailTextureTask (mesh_block_task.cpp:539).
+            const transvoxel::MeshArrays &mesh_arrays =
+                VoxelMesherTransvoxel::get_mesh_cache_from_current_thread();
 
-        int vert_end = col.submesh_vertex_end;
-        int idx_end = col.submesh_index_end;
+            int vert_end = col.submesh_vertex_end;
+            int idx_end = col.submesh_index_end;
 
-        nav_data.positions.assign(
-            mesh_arrays.vertices.begin(),
-            mesh_arrays.vertices.begin() + vert_end);
-        nav_data.indices.assign(
-            mesh_arrays.indices.begin(),
-            mesh_arrays.indices.begin() + idx_end);
+            nav_data.positions.assign(
+                mesh_arrays.vertices.begin(),
+                mesh_arrays.vertices.begin() + vert_end);
+            nav_data.indices.assign(
+                mesh_arrays.indices.begin(),
+                mesh_arrays.indices.begin() + idx_end);
 
-        meshing_dependency->nav_mesh_manager->on_mesh_built(std::move(nav_data));
+            meshing_dependency->nav_mesh_manager->on_mesh_built(std::move(nav_data));
+        }
     }
 }
 #endif
@@ -441,7 +556,7 @@ if (meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0) {
 - `get_mesh_cache_from_current_thread()` returns data that's only valid until the next `build()` call on that thread. We copy immediately via `assign()`, which is fine.
 - In double-precision builds, the thread cache already uses `Vector3f` (32-bit), which is what Recast expects. No conversion needed.
 - Gated on `MODULE_NAVIGATION_3D_ENABLED` for builds without the navigation module.
-- The Transvoxel mesher check is implicit — `get_mesh_cache_from_current_thread()` is only meaningful after a Transvoxel `build()`. If a different mesher is in use, the nav_mesh_manager should be null (navigation is only supported with Transvoxel for now).
+- The Transvoxel mesher check is **explicit** via `try_get_as()`, matching the detail texture code pattern at line 531. This prevents reading stale thread-local cache data if a non-Transvoxel mesher is used.
 
 ---
 
@@ -778,8 +893,8 @@ void NavMeshManager::_dispatch_nav_build(Vector3i chunk_pos, uint32_t generation
         }
     }
 
-    // Snapshot overlapping obstacles (separate mutex)
-    AABB expanded_aabb = /* chunk AABB expanded by borderSize * cs */;
+    // Snapshot overlapping obstacles (lock ordering: _cache_mutex already held → _obstacle_mutex)
+    AABB expanded_aabb = _chunk_aabb_world(chunk_pos).grow(cfg.borderSize * cfg.cs);
     {
         MutexLock lock(_obstacle_mutex);
         for (const auto &[id, obs] : _obstacles) {
@@ -803,6 +918,8 @@ If a chunk's data changes while a build is in flight:
 1. The new `on_mesh_built()` bumps the generation counter and dispatches a new build.
 2. When the old build's `apply_result()` runs, `apply_nav_result()` compares `build_generation` against `_applied_generations[chunk_pos]`.
 3. If a newer result was already applied, the stale result is silently dropped.
+
+**Concurrent updates to the same chunk:** If two worker threads call `on_mesh_built()` for the same chunk nearly simultaneously (possible if voxels are edited during initial load), the second call will bump the generation and dispatch a new build, while the first build is already in flight with the older data. The generation counter in `apply_nav_result()` handles this correctly — the stale result is dropped when the newer one arrives (or is already applied). No special handling is needed; the existing generation counter mechanism ensures correctness.
 
 ---
 
@@ -855,20 +972,16 @@ If floating-point quantization causes mismatches, `map_set_edge_connection_margi
 
 ### Who calls `remove_chunk()`?
 
-The terrain node is responsible for calling `NavMeshManager::remove_chunk()` when chunks leave the loaded area. The integration points differ by terrain type:
+The terrain node is responsible for calling `NavMeshManager::remove_chunk()` when chunks leave the loaded area.
 
-**VoxelLodTerrain:** In the LOD update task (`voxel_lod_terrain_update_task.cpp`), when LOD 0 blocks are unloaded, a callback or deferred main-thread action should call `remove_chunk()`. This parallels how `FreeMeshBlockTask` is already queued via `TimeSpreadTaskRunner` when mesh blocks are freed.
-
-**VoxelTerrain:** In `voxel_terrain.cpp`, the `_on_block_exit()` or equivalent cleanup path should call `remove_chunk()`.
+**VoxelTerrain:** In `voxel_terrain.cpp`, `unload_mesh_block()` (line 528) is called when a mesh block has no remaining viewers. This is the integration point — call `_nav_mesh_manager->remove_chunk(bpos)` here if the manager exists.
 
 ### Terrain node removal (`clear_all`)
 
-When a `VoxelTerrain`/`VoxelLodTerrain` node exits the scene tree:
+When a `VoxelTerrain` node is destroyed:
 1. `nav_mesh_manager->valid = false` — cancels all in-flight NavMeshBuildTasks.
 2. `nav_mesh_manager->clear_all()` — frees all NavigationServer3D region RIDs and clears internal state.
-3. The terrain node's destructor (or `_exit_tree()`) handles this.
-
-This mirrors how both terrains already set `_meshing_dependency->valid = false` in their destructors.
+3. This happens in `~VoxelTerrain()`, matching the existing pattern where `_meshing_dependency->valid = false` is set in the destructor (line 107).
 
 ---
 
@@ -939,7 +1052,7 @@ The `voxel_navigation` build option in `common.py` should also check that `MODUL
 
 | Interface | From | To | Data |
 |-----------|------|----|------|
-| **1. Mesh capture** | `MeshBlockTask::run()` | `NavMeshManager::on_mesh_built()` | Collision vertices/indices (from thread cache), chunk position |
+| **1. Mesh capture** | `MeshBlockTask::build_mesh()` | `NavMeshManager::on_mesh_built()` | Collision vertices/indices (from thread cache), chunk position, world AABB |
 | **2. Nav build dispatch** | `NavMeshManager::on_mesh_built()` | `NavMeshBuildTask` (thread pool) | Copied triangles (chunk + neighbors), obstacle snapshot, rcConfig, generation |
 | **3. Terrain rasterization** | `NavMeshBuildTask` | Recast | `float*` vertices, `int*` indices → `rcHeightfield` |
 | **4. Obstacle rasterization** | `NavMeshBuildTask` | Recast | Obstacle mesh vertices/indices → same `rcHeightfield` |
@@ -955,6 +1068,10 @@ The `voxel_navigation` build option in `common.py` should also check that `MODUL
 
 These items are noted for later consideration and are not part of the initial implementation scope.
 
+**VoxelLodTerrain Support:** The initial implementation targets `VoxelTerrain` only. Extending to `VoxelLodTerrain` requires adapting the lifecycle integration to its update task system, LOD-aware chunk management, and different MeshingDependency propagation path.
+
+**NavMeshBuildTask Priority Tuning:** Currently `get_priority()` returns `TaskPriority::max()` (lowest priority), meaning nav tasks run after all mesh tasks. This can cause noticeable latency before navmesh appears. A proper priority scheme should consider viewer distance and navigation urgency.
+
 **Performance — Projected Area Marking:** Expose a collection of convex polygon footprints passed to `rcMarkConvexPolyArea()` on the `rcCompactHeightfield`. This is a lighter-weight alternative to full mesh rasterization for simple vertical obstacles (walls, fences), and can be used alongside the full rasterization approach. Could speed up rebuilds for common obstacle types.
 
 **LOD-Aware Navigation:** Currently only LOD 0 chunks produce navmesh data. For large worlds, coarser LODs could provide approximate long-range pathfinding while LOD 0 handles detailed local navigation. The nav range must be <= the LOD 0 loading range.
@@ -963,9 +1080,7 @@ These items are noted for later consideration and are not part of the initial im
 
 **Debouncing Rapid Edits:** When voxels are edited rapidly (painting terrain), the mesher already re-meshes affected chunks. The nav builder should debounce to avoid excessive Recast rebuilds — e.g., a short delay after the last edit before dispatching a nav build, or cancelling in-flight builds for chunks that have been re-dirtied. The generation counter already prevents stale results from being applied, but the redundant Recast compute is still wasted work.
 
-**Navigation Range Configuration:** The nav range should be configurable independently from terrain mesh loading range. Players may need navigation within 64m even if terrain is visible at 256m.
-
-**Cleanup on Terrain Node Removal:** When a `VoxelTerrain`/`VoxelLodTerrain` node is removed from the scene tree, all nav regions must be freed in bulk. `NavMeshManager::clear_all()` handles this. See "Chunk Lifecycle Integration" section above.
+**Cleanup on Terrain Node Removal:** When a `VoxelTerrain` node is destroyed, all nav regions must be freed in bulk. `NavMeshManager::clear_all()` handles this. See "Chunk Lifecycle Integration" section above.
 
 **Editor UI:** Debug visualization of nav regions (Godot already supports navmesh debug drawing). Property inspector for Recast parameters on the VoxelNavBuilder node. Gizmos showing nav range. Toggle to enable/disable nav building in-editor.
 
