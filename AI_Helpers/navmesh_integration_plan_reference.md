@@ -29,48 +29,47 @@ Properties are flat on the terrain node (`VoxelTerrain` / `VoxelLodTerrain`), or
 ADD_GROUP("Navigation", "")
   generate_navigation         : bool    // Master toggle (like generate_collisions)
   navigation_layers           : int     // PROPERTY_HINT_LAYERS_3D_NAVIGATION
-  nav_range                   : float   // Independent from mesh loading range
+  nav_range                   : float   // Default 128.0; independent from mesh loading range
 
 ADD_GROUP("Navigation Agent", "nav_agent_")
-  nav_agent_radius            : float   // → drives cfg.cs and cfg.walkableRadius
-  nav_agent_height            : float   // → drives cfg.walkableHeight
-  nav_agent_max_climb         : float   // → drives cfg.walkableClimb
-  nav_agent_max_slope         : float   // → drives cfg.walkableSlopeAngle (degrees)
+  nav_agent_radius            : float   // Default 0.4 → drives cfg.cs and cfg.walkableRadius
+  nav_agent_height            : float   // Default 1.8 → drives cfg.walkableHeight
+  nav_agent_max_climb         : float   // Default 0.3 → drives cfg.walkableClimb
+  nav_agent_max_slope         : float   // Default 45.0 (degrees) → drives cfg.walkableSlopeAngle
 
 ADD_GROUP("Navigation Advanced", "nav_")
-  nav_cell_size               : float   // Override; 0 = auto (agent_radius / 2)
-  nav_cell_height             : float   // Override; 0 = auto (cell_size / 2)
+  nav_cell_size               : float   // Default 0.2 (= agent_radius / 2)
+  nav_cell_height             : float   // Default 0.1 (= cell_size / 2)
   nav_filter_low_hanging      : bool    // Default true
   nav_filter_ledge_spans      : bool    // Default true
   nav_filter_low_height       : bool    // Default true
-  nav_region_min_size         : int     // rcConfig.minRegionArea
-  nav_region_merge_size       : int     // rcConfig.mergeRegionArea
-  nav_edge_max_length         : float   // rcConfig.maxEdgeLen; 0 = auto
-  nav_edge_max_error          : float   // rcConfig.maxSimplificationError
-  nav_detail_sample_dist      : float   // 0 = auto (6 * cell_size)
-  nav_detail_sample_max_error : float   // 0 = auto (cell_height)
+  nav_region_min_size         : int     // Default 8 (rcConfig.minRegionArea)
+  nav_region_merge_size       : int     // Default 20 (rcConfig.mergeRegionArea)
+  nav_edge_max_length         : float   // Default 3.2 (= walkableRadius * 8 * cs)
+  nav_edge_max_error          : float   // Default 1.3 (rcConfig.maxSimplificationError)
+  nav_detail_sample_dist      : float   // Default 1.2 (= 6 * cell_size)
+  nav_detail_sample_max_error : float   // Default 0.1 (= cell_height)
 ```
 
-**Property derivation:** The "Navigation Agent" group contains the user-friendly parameters that describe the agent. The Recast `rcConfig` values are derived from these at build time:
+All advanced properties show their actual computed defaults. When agent parameters change, the advanced defaults are NOT automatically recomputed — they stay at whatever value the developer set (or the initial defaults). This keeps behavior transparent. A setter warning (`WARN_PRINT`) is emitted if a value is set to zero or negative, since no property uses zero as a meaningful value.
+
+**Property derivation:** The "Navigation Agent" group contains the user-friendly parameters that describe the agent. The Recast `rcConfig` values are derived from all properties at build time:
 
 ```cpp
-// Computed when properties change (not stored in rcConfig directly)
-cfg.cs = (nav_cell_size > 0) ? nav_cell_size : nav_agent_radius / 2.0f;
-cfg.ch = (nav_cell_height > 0) ? nav_cell_height : cfg.cs / 2.0f;
+// Computed when properties change, stored on NavMeshManager::recast_config
+cfg.cs = nav_cell_size;
+cfg.ch = nav_cell_height;
 cfg.walkableSlopeAngle = nav_agent_max_slope;
 cfg.walkableHeight = (int)ceilf(nav_agent_height / cfg.ch);
 cfg.walkableClimb  = (int)ceilf(nav_agent_max_climb / cfg.ch);
 cfg.walkableRadius = (int)ceilf(nav_agent_radius / cfg.cs);
-cfg.maxEdgeLen = (nav_edge_max_length > 0)
-    ? (int)(nav_edge_max_length / cfg.cs) : cfg.walkableRadius * 8;
+cfg.maxEdgeLen = (int)(nav_edge_max_length / cfg.cs);
 cfg.maxSimplificationError = nav_edge_max_error;
 cfg.minRegionArea = nav_region_min_size;
 cfg.mergeRegionArea = nav_region_merge_size;
 cfg.maxVertsPerPoly = 6;
-cfg.detailSampleDist = (nav_detail_sample_dist > 0)
-    ? nav_detail_sample_dist : 6.0f * cfg.cs;
-cfg.detailSampleMaxError = (nav_detail_sample_max_error > 0)
-    ? nav_detail_sample_max_error : cfg.ch;
+cfg.detailSampleDist = nav_detail_sample_dist;
+cfg.detailSampleMaxError = nav_detail_sample_max_error;
 cfg.borderSize = cfg.walkableRadius + 3;
 ```
 
@@ -688,7 +687,7 @@ cfg.detailSampleMaxError = cfg.ch;
 cfg.borderSize = cfg.walkableRadius + 3;
 ```
 
-Advanced parameters (`nav_cell_size`, `nav_edge_max_length`, etc.) allow overriding the auto-derived values when fine-tuning is needed. A value of 0 means "auto".
+All advanced parameters display their actual defaults. There is no "0 = auto" convention — every value is explicit and meaningful. A `WARN_PRINT` is emitted if a value is set to zero or negative.
 
 ---
 
