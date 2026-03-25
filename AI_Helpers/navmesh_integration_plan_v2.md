@@ -13,6 +13,135 @@ This approach:
 
 ---
 
+## Developer-Facing Design
+
+### Design Principles
+
+Navigation follows the same monolithic pattern as the rest of the module. Chunks are internal data structures managed by the terrain node — not scene tree nodes. Just as rendering uses `DirectMeshInstance` (wrapping `RenderingServer` RIDs) and physics uses `DirectStaticBody` (wrapping `PhysicsServer3D` RIDs), navigation manages `NavigationServer3D` region RIDs directly inside `NavMeshManager`. No `NavigationRegion3D` nodes are created.
+
+This works because `NavigationAgent3D` queries the server directly via `query_path()` using the World3D's default navigation map. Agents and regions find each other by being registered on the same map RID — agents have zero knowledge of region nodes. Standard Godot navigation workflows (adding a `NavigationAgent3D` to a character) work automatically once our regions are registered.
+
+### Exposed Properties
+
+Properties are flat on the terrain node (`VoxelTerrain` / `VoxelLodTerrain`), organized into inspector groups via `ADD_GROUP`. This matches the existing pattern for collision settings (`generate_collisions`, `collision_layer`, `collision_mask`, `collision_margin`).
+
+```
+ADD_GROUP("Navigation", "")
+  generate_navigation         : bool    // Master toggle (like generate_collisions)
+  navigation_layers           : int     // PROPERTY_HINT_LAYERS_3D_NAVIGATION
+  nav_range                   : float   // Independent from mesh loading range
+
+ADD_GROUP("Navigation Agent", "nav_agent_")
+  nav_agent_radius            : float   // → drives cfg.cs and cfg.walkableRadius
+  nav_agent_height            : float   // → drives cfg.walkableHeight
+  nav_agent_max_climb         : float   // → drives cfg.walkableClimb
+  nav_agent_max_slope         : float   // → drives cfg.walkableSlopeAngle (degrees)
+
+ADD_GROUP("Navigation Advanced", "nav_")
+  nav_cell_size               : float   // Override; 0 = auto (agent_radius / 2)
+  nav_cell_height             : float   // Override; 0 = auto (cell_size / 2)
+  nav_filter_low_hanging      : bool    // Default true
+  nav_filter_ledge_spans      : bool    // Default true
+  nav_filter_low_height       : bool    // Default true
+  nav_region_min_size         : int     // rcConfig.minRegionArea
+  nav_region_merge_size       : int     // rcConfig.mergeRegionArea
+  nav_edge_max_length         : float   // rcConfig.maxEdgeLen; 0 = auto
+  nav_edge_max_error          : float   // rcConfig.maxSimplificationError
+  nav_detail_sample_dist      : float   // 0 = auto (6 * cell_size)
+  nav_detail_sample_max_error : float   // 0 = auto (cell_height)
+```
+
+**Property derivation:** The "Navigation Agent" group contains the user-friendly parameters that describe the agent. The Recast `rcConfig` values are derived from these at build time:
+
+```cpp
+// Computed when properties change (not stored in rcConfig directly)
+cfg.cs = (nav_cell_size > 0) ? nav_cell_size : nav_agent_radius / 2.0f;
+cfg.ch = (nav_cell_height > 0) ? nav_cell_height : cfg.cs / 2.0f;
+cfg.walkableSlopeAngle = nav_agent_max_slope;
+cfg.walkableHeight = (int)ceilf(nav_agent_height / cfg.ch);
+cfg.walkableClimb  = (int)ceilf(nav_agent_max_climb / cfg.ch);
+cfg.walkableRadius = (int)ceilf(nav_agent_radius / cfg.cs);
+cfg.maxEdgeLen = (nav_edge_max_length > 0)
+    ? (int)(nav_edge_max_length / cfg.cs) : cfg.walkableRadius * 8;
+cfg.maxSimplificationError = nav_edge_max_error;
+cfg.minRegionArea = nav_region_min_size;
+cfg.mergeRegionArea = nav_region_merge_size;
+cfg.maxVertsPerPoly = 6;
+cfg.detailSampleDist = (nav_detail_sample_dist > 0)
+    ? nav_detail_sample_dist : 6.0f * cfg.cs;
+cfg.detailSampleMaxError = (nav_detail_sample_max_error > 0)
+    ? nav_detail_sample_max_error : cfg.ch;
+cfg.borderSize = cfg.walkableRadius + 3;
+```
+
+When any navigation property changes, the derived `rcConfig` is recomputed and stored on the `NavMeshManager`. Existing cached triangle data remains valid — only the Recast build parameters change, so all chunks are marked for rebuild.
+
+### Obstacle API (Methods)
+
+Obstacles are runtime-only and exposed as methods on the terrain node, forwarding to `NavMeshManager`:
+
+```cpp
+// In VoxelTerrain / VoxelLodTerrain _bind_methods():
+ClassDB::bind_method(D_METHOD("add_nav_obstacle", "collision_mesh", "transform"), &Self::add_nav_obstacle);
+ClassDB::bind_method(D_METHOD("remove_nav_obstacle", "obstacle_id"), &Self::remove_nav_obstacle);
+ClassDB::bind_method(D_METHOD("update_nav_obstacle_transform", "obstacle_id", "transform"),
+                     &Self::update_nav_obstacle_transform);
+```
+
+```gdscript
+# GDScript usage:
+var obstacle_id = terrain.add_nav_obstacle(rock_collision_mesh, rock_transform)
+# Later, if the obstacle moves:
+terrain.update_nav_obstacle_transform(obstacle_id, new_transform)
+# Or remove it:
+terrain.remove_nav_obstacle(obstacle_id)
+```
+
+No special obstacle node is needed. The terrain manages obstacle lifecycle internally.
+
+### Developer Workflow
+
+The minimal setup for a developer:
+
+1. **Enable navigation** on the terrain node: set `generate_navigation = true`.
+2. **Set agent parameters**: `nav_agent_radius`, `nav_agent_height`, `nav_agent_max_climb`, `nav_agent_max_slope`.
+3. **Add a NavigationAgent3D** to their character (standard Godot workflow).
+4. Pathfinding works automatically — the terrain's internal regions are on the World3D's default navigation map, same map the agent queries.
+
+Optional:
+- Tune advanced Recast parameters if default quality isn't sufficient.
+- Call `add_nav_obstacle()` for dynamic obstacles (trees, buildings, etc.).
+- Set `nav_range` to limit navigation coverage to a radius smaller than the view distance.
+
+```
+Developer                    Terrain Node              NavMeshManager         NavigationServer3D
+─────────                    ────────────              ──────────────         ──────────────────
+Sets generate_navigation=true
+Sets nav_agent_radius etc.
+                             Creates NavMeshManager
+                             Passes it via MeshingDependency
+
+                             (chunks mesh on workers)
+                                                       on_mesh_built()
+                                                       → caches data
+                                                       → dispatches builds
+                                                       → apply_nav_result()
+                                                         → region_create()
+                                                         → region_set_map(world_nav_map)
+                                                         → region_set_navigation_mesh()
+
+NavigationAgent3D queries ──────────────────────────────────────────────► map_get_path()
+  (uses World3D default map,                                              (finds our regions
+   same map our regions use)                                               automatically)
+
+add_nav_obstacle(mesh, xform)
+                             → nav_mesh_manager
+                               ->add_obstacle()        → marks dirty chunks
+                                                       → dispatches rebuilds
+```
+
+---
+
 ## File Organization
 
 New files live under `terrain/navigation/`, mirroring the organization of other terrain subsystems (`terrain/instancing/`, `engine/detail_rendering/`):
@@ -105,12 +234,18 @@ public:
     // Cancellation — checked by NavMeshBuildTask::is_cancelled().
     bool valid = true;
 
-    // --- Configuration (set before use, typically from editor properties) ---
-    rcConfig recast_config;         // Recast build parameters
+    // --- Configuration (derived from terrain node properties) ---
+    // Recomputed by the terrain node when any nav property changes,
+    // then stored here. See "Developer-Facing Design > Property derivation".
+    rcConfig recast_config;         // Derived Recast build parameters
     float nav_range = 128.0f;      // Independent from mesh loading range
+    uint32_t navigation_layers = 1;
     bool filter_low_hanging = true;
     bool filter_ledge_spans = true;
     bool filter_low_height_spans = true;
+
+    // Reference to the World3D navigation map (set by terrain node on enter_tree)
+    RID _nav_map_rid;
 
 private:
     // Per-chunk cached triangle data. Written by worker threads after meshing,
@@ -531,7 +666,9 @@ void NavMeshBuildTask::apply_result() {
 
 ## Recast Configuration
 
-Default parameters, exposed as properties on the NavMeshManager (or a future VoxelNavBuilder node):
+The `rcConfig` is not set directly by developers. It is derived from the terrain node's inspector properties (see "Developer-Facing Design > Property derivation"). The terrain node recomputes `NavMeshManager::recast_config` whenever any navigation property changes.
+
+Default values (before derivation from agent properties):
 
 ```cpp
 rcConfig cfg = {};
@@ -550,6 +687,8 @@ cfg.detailSampleDist = 6.0f * cfg.cs;
 cfg.detailSampleMaxError = cfg.ch;
 cfg.borderSize = cfg.walkableRadius + 3;
 ```
+
+Advanced parameters (`nav_cell_size`, `nav_edge_max_length`, etc.) allow overriding the auto-derived values when fine-tuning is needed. A value of 0 means "auto".
 
 ---
 
@@ -688,6 +827,7 @@ void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> na
     if (!rid.is_valid()) {
         rid = NavigationServer3D::get_singleton()->region_create();
         NavigationServer3D::get_singleton()->region_set_map(rid, _nav_map_rid);
+        NavigationServer3D::get_singleton()->region_set_navigation_layers(rid, navigation_layers);
         NavigationServer3D::get_singleton()->region_set_enabled(rid, true);
     }
     NavigationServer3D::get_singleton()->region_set_transform(rid, _chunk_to_world(chunk_pos));
@@ -739,16 +879,12 @@ Obstacles use **full mesh rasterization** — the actual obstacle geometry is ra
 
 ### API
 
+Developers call methods on the terrain node (see "Developer-Facing Design > Obstacle API"). The terrain node forwards to `NavMeshManager`:
+
 ```cpp
-// Add an obstacle. Returns ID for later removal.
-// Collision mesh is rasterized into any chunk whose nav bounds overlap the obstacle.
+// NavMeshManager internal API (called by terrain node methods):
 int NavMeshManager::add_obstacle(Ref<Mesh> collision_mesh, Transform3D transform);
-
-// Remove obstacle and rebuild affected chunks.
 void NavMeshManager::remove_obstacle(int obstacle_id);
-
-// Update transform (e.g. obstacle moved). Rebuilds chunks affected by both
-// old and new positions.
 void NavMeshManager::update_obstacle_transform(int obstacle_id, Transform3D new_transform);
 ```
 
