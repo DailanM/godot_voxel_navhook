@@ -84,7 +84,8 @@ Obstacles are runtime-only and exposed as methods on the terrain node, forwardin
 
 ```cpp
 // In VoxelTerrain _bind_methods():
-ClassDB::bind_method(D_METHOD("add_nav_obstacle", "collision_mesh", "transform"), &Self::add_nav_obstacle);
+ClassDB::bind_method(D_METHOD("add_nav_obstacle", "collision_mesh", "transform", "walkable"),
+                     &Self::add_nav_obstacle, DEFVAL(false));
 ClassDB::bind_method(D_METHOD("remove_nav_obstacle", "obstacle_id"), &Self::remove_nav_obstacle);
 ClassDB::bind_method(D_METHOD("update_nav_obstacle_transform", "obstacle_id", "transform"),
                      &Self::update_nav_obstacle_transform);
@@ -93,6 +94,8 @@ ClassDB::bind_method(D_METHOD("update_nav_obstacle_transform", "obstacle_id", "t
 ```gdscript
 # GDScript usage:
 var obstacle_id = terrain.add_nav_obstacle(rock_collision_mesh, rock_transform)
+# Walkable obstacle (bridge, ramp) — slope-based walkability is evaluated:
+var bridge_id = terrain.add_nav_obstacle(bridge_mesh, bridge_transform, true)
 # Later, if the obstacle moves:
 terrain.update_nav_obstacle_transform(obstacle_id, new_transform)
 # Or remove it:
@@ -156,18 +159,21 @@ VoxelNavViewer (inherits Node3D)
   enabled_in_editor  : bool          // Default false
 ```
 
-**Lifecycle** (mirrors `VoxelViewer`):
-- `NOTIFICATION_ENTER_TREE`: registers with `NavMeshManager`'s nav viewer registry
-- `NOTIFICATION_EXIT_TREE`: deferred unregistration (for reparenting safety, matching `VoxelViewer`'s pattern)
-- `NOTIFICATION_TRANSFORM_CHANGED`: updates position in registry
+**Lifecycle** (mirrors `VoxelViewer` — see `terrain/voxel_viewer.cpp`):
+- `NOTIFICATION_ENTER_TREE`: registers with `NavMeshManager`'s nav viewer registry via `NavMeshManager::add_nav_viewer()`. Skips registration if in editor and `!_enabled_in_editor`. If `_pending_deferred_unregistration` is set (node was reparented), reuses the existing ID instead of allocating a new one, and calls `sync_all_parameters()`.
+- `NOTIFICATION_EXIT_TREE`: **deferred** unregistration — sets `_pending_deferred_unregistration = true` and schedules a `call_deferred` callback. The callback checks `is_inside_tree()` before actually removing the viewer. This prevents unnecessary navmesh churn when a node is reparented (EXIT_TREE → ENTER_TREE), exactly matching `VoxelViewer::unregister_deferred_callback()`.
+- `NOTIFICATION_TRANSFORM_CHANGED`: updates position in registry via `NavMeshManager::update_nav_viewer_position(_viewer_id, get_global_transform().origin)`
+
+**ID type:** `NavViewerID` — a `SlotMapKey<uint16_t, uint16_t>` matching the `ViewerID` pattern in `engine/ids.h`. Generational IDs prevent use-after-free when slots are reused.
+
+**How `VoxelNavViewer` finds the `NavMeshManager`:** Uses the same **global registry pattern** as `VoxelViewer`. `VoxelNavViewer` registers directly with the `NavMeshManager` singleton (or a registry on `VoxelEngine`). Terrain nodes discover nav viewers by iterating the registry — no scene tree traversal. If no `NavMeshManager` is active (no terrain with `generate_navigation = true`), registration is a no-op.
 
 **NavMeshManager integration:**
-- `NavMeshManager` maintains a `StdVector<NavViewerState>` with each viewer's position and distance
+- `NavMeshManager` maintains a `SlotMap<NavViewerState>` with each viewer's position and distance (matching `VoxelEngine`'s `SlotMap<Viewer>` pattern)
+- `add_nav_viewer()` / `remove_nav_viewer()` / `update_nav_viewer_position()` methods manage the registry
 - A `Mutex _viewer_mutex` protects the registry (viewers update on main thread, `_is_within_nav_range()` reads on worker threads)
-- `_is_within_nav_range(chunk_pos)` returns true if the chunk's world center is within `nav_distance` of **any** registered `VoxelNavViewer`
+- `_is_within_nav_range(chunk_pos)` iterates all registered nav viewers and returns true if the chunk's world center is within `nav_distance` of **any** viewer
 - When a `VoxelNavViewer` moves or its distance changes, the manager can dispatch builds for newly-in-range chunks and remove regions for chunks that left range
-
-**How `VoxelNavViewer` finds the `NavMeshManager`:** The viewer walks up the scene tree to find a `VoxelTerrain` ancestor (or uses a similar discovery mechanism). If no terrain with `generate_navigation = true` exists, the viewer does nothing.
 
 ---
 
@@ -219,7 +225,9 @@ NavMeshBuildTask::run()  ◄─────────────────�
   └─ Produce NavigationMesh
         │
         └──► apply_result() ─────────────────────────────►  region_set_navigation_mesh()
-               (checks generation counter —                  (via TimeSpreadTaskRunner)
+               (called on main thread by                     (NavigationServer3D)
+                VoxelEngine::process() dequeue;
+                checks generation counter —
                 skips if stale)
 
 Game Code (main thread):
@@ -249,7 +257,9 @@ public:
     // --- Called from main thread ---
 
     // Obstacle management. Marks overlapping chunks dirty and dispatches rebuilds.
-    int add_obstacle(Ref<Mesh> collision_mesh, Transform3D transform);
+    // walkable: if false, obstacle triangles are marked RC_NULL_AREA (blocks nav).
+    //           if true, rcMarkWalkableTriangles() evaluates slope (bridges, ramps).
+    int add_obstacle(Ref<Mesh> collision_mesh, Transform3D transform, bool walkable = false);
     void remove_obstacle(int obstacle_id);
     void update_obstacle_transform(int obstacle_id, Transform3D new_transform);
 
@@ -283,13 +293,15 @@ public:
     // --- Navigation viewer registry ---
     // VoxelNavViewer nodes register/unregister here (main thread).
     // _is_within_nav_range() reads this under _viewer_mutex (worker threads).
+    // Uses SlotMap with generational IDs matching the VoxelViewer pattern.
     struct NavViewerState {
         Vector3 world_position;
         unsigned int nav_distance = 64;
     };
-    void register_nav_viewer(int viewer_id, NavViewerState state);
-    void unregister_nav_viewer(int viewer_id);
-    void update_nav_viewer(int viewer_id, Vector3 position);
+    NavViewerID add_nav_viewer();
+    void remove_nav_viewer(NavViewerID viewer_id);
+    void update_nav_viewer_position(NavViewerID viewer_id, Vector3 position);
+    void update_nav_viewer_distance(NavViewerID viewer_id, unsigned int distance);
 
 private:
     // --- Lock ordering: _cache_mutex → _obstacle_mutex → _viewer_mutex ---
@@ -311,14 +323,16 @@ private:
         Ref<Mesh> collision_mesh;
         Transform3D transform;
         AABB world_aabb;
+        bool walkable = false;  // false = RC_NULL_AREA; true = slope-evaluated walkability
     };
     Mutex _obstacle_mutex;
     HashMap<int, ObstacleEntry> _obstacles;
     int _next_obstacle_id = 0;
 
     // Navigation viewer positions. Modified on main thread, read by worker threads.
+    // SlotMap provides generational IDs matching the VoxelViewer pattern (engine/ids.h).
     Mutex _viewer_mutex;
-    HashMap<int, NavViewerState> _nav_viewers;
+    SlotMap<NavViewerState, uint16_t, uint16_t> _nav_viewers;
 
     // Active NavigationServer3D regions. Main thread only.
     HashMap<Vector3i, RID> _region_rids;
@@ -409,7 +423,7 @@ void NavMeshManager::_try_dispatch_nav_build(Vector3i chunk_pos) {
 2. Compute which chunks overlap the obstacle's AABB.
 3. Mark those chunks dirty and dispatch `NavMeshBuildTask`s for any that have cached triangle data and ready neighbors.
 
-**`apply_nav_result()`** (main thread, via TimeSpreadTaskRunner):
+**`apply_nav_result()`** (main thread, called from `apply_result()` which is dequeued by `VoxelEngine::process()`):
 1. Compare `build_generation` against `_applied_generations[chunk_pos]`. If the build is for an older generation than what's already applied, skip it (a newer build is in flight or already applied).
 2. If no region RID exists for this chunk, create one via `NavigationServer3D::region_create()`.
 3. Call `region_set_navigation_mesh()` with the new data.
@@ -473,13 +487,15 @@ These follow the same pattern as `VoxelMeshBlockVT` (`terrain/fixed_lod/voxel_me
 
 ## MeshingDependency Modification
 
-`MeshingDependency` gains a nullable `nav_mesh_manager` field. This is the mechanism by which worker threads access the NavMeshManager:
+`MeshingDependency` gains a nullable `nav_mesh_manager` field (gated on `#ifdef MODULE_NAVIGATION_3D_ENABLED`). This is the mechanism by which worker threads access the NavMeshManager:
 
 ```cpp
 struct MeshingDependency {
     Ref<VoxelMesher> mesher;
     Ref<VoxelGenerator> generator;
+#ifdef MODULE_NAVIGATION_3D_ENABLED
     std::shared_ptr<NavMeshManager> nav_mesh_manager; // NEW — nullable for opt-in
+#endif
     bool valid = true;
 
     static void reset(std::shared_ptr<MeshingDependency> &ref,
@@ -557,6 +573,7 @@ if (meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0) {
 - In double-precision builds, the thread cache already uses `Vector3f` (32-bit), which is what Recast expects. No conversion needed.
 - Gated on `MODULE_NAVIGATION_3D_ENABLED` for builds without the navigation module.
 - The Transvoxel mesher check is **explicit** via `try_get_as()`, matching the detail texture code pattern at line 531. This prevents reading stale thread-local cache data if a non-Transvoxel mesher is used.
+- **Vertex coordinate space:** The Transvoxel mesher outputs vertices in **chunk-local space** (origin at the chunk's corner, range 0 to `mesh_block_size`). These must be converted to world space before being used in the Recast pipeline, since chunks and their neighbors need to share a common coordinate system. The conversion is a simple inline offset: `world_vertex = local_vertex + chunk_position * mesh_block_size`. This follows the same convention used throughout godot-voxel (e.g., `VoxelMeshBlockVT` computes `_position_in_voxels = bpos * size` for its world-space translation). The implementer should apply this offset either at capture time (in this hook, before storing in `NavChunkData`) or at rasterization time (in `NavMeshBuildTask::run()`). Doing it at capture time is simpler since each chunk only needs its own offset.
 
 ---
 
@@ -655,8 +672,15 @@ Obstacles use full mesh rasterization (not projected obstructions). This produce
 for (const auto &obs : obstacles) {
     // Extract and transform obstacle mesh vertices to world space
     // ...
-    // Non-walkable obstacles: mark all triangles as RC_NULL_AREA
-    StdVector<unsigned char> obs_areas(obs_num_tris, RC_NULL_AREA);
+    StdVector<unsigned char> obs_areas(obs_num_tris, 0);
+    if (obs.walkable) {
+        // Walkable obstacles (bridges, ramps): evaluate slope-based walkability
+        rcMarkWalkableTriangles(&recast_ctx, cfg.walkableSlopeAngle,
+            obs_verts, obs_num_verts, obs_tris, obs_num_tris, obs_areas.data());
+    } else {
+        // Non-walkable obstacles: mark all triangles as RC_NULL_AREA (blocks nav)
+        memset(obs_areas.data(), RC_NULL_AREA, obs_areas.size());
+    }
     rcRasterizeTriangles(&recast_ctx,
         obs_verts, obs_num_verts, obs_tris, obs_areas.data(),
         obs_num_tris, *hf, cfg.walkableClimb);
@@ -767,6 +791,8 @@ rcFreePolyMeshDetail(dmesh);
 ```
 
 ### `apply_result()` — Main Thread
+
+Called automatically on the main thread by `VoxelEngine::process()`, which dequeues completed tasks from the thread pool and calls `apply_result()` then deletes them. This is the standard `IThreadedTask` lifecycle — no special registration needed.
 
 ```cpp
 void NavMeshBuildTask::apply_result() {
@@ -995,14 +1021,17 @@ Developers call methods on the terrain node (see "Developer-Facing Design > Obst
 
 ```cpp
 // NavMeshManager internal API (called by terrain node methods):
-int NavMeshManager::add_obstacle(Ref<Mesh> collision_mesh, Transform3D transform);
+int NavMeshManager::add_obstacle(Ref<Mesh> collision_mesh, Transform3D transform, bool walkable = false);
 void NavMeshManager::remove_obstacle(int obstacle_id);
 void NavMeshManager::update_obstacle_transform(int obstacle_id, Transform3D new_transform);
 ```
 
 ### Walkable vs Non-Walkable Obstacles
 
-By default, obstacle triangles are marked `RC_NULL_AREA` (non-walkable — they block navigation). For obstacles with walkable surfaces (bridges, ramps, rooftops), the API should support a flag to run `rcMarkWalkableTriangles` on the obstacle mesh instead, so slope-based walkability is evaluated.
+The `walkable` parameter on `add_obstacle()` controls how obstacle triangles are classified during rasterization:
+
+- **`walkable = false` (default):** All obstacle triangles are marked `RC_NULL_AREA` — they block navigation entirely. Use for walls, rocks, trees.
+- **`walkable = true`:** `rcMarkWalkableTriangles()` evaluates slope-based walkability on the obstacle mesh, allowing navigation on surfaces within `walkableSlopeAngle`. Use for bridges, ramps, rooftops, or any obstacle with walkable surfaces.
 
 ### Dirty Propagation
 
@@ -1043,6 +1072,13 @@ This ensures the module compiles cleanly when:
 - `disable_navigation_3d=yes` is set
 - `disable_3d=yes` is set (cascades into disabling navigation_3d)
 - `builtin_recastnavigation=no` with missing system library
+
+**Files requiring `#ifdef MODULE_NAVIGATION_3D_ENABLED` guards:**
+- `terrain/navigation/*.h` and `*.cpp` — entire files (nav-only code)
+- `engine/meshing_dependency.h` — the `nav_mesh_manager` field
+- `meshers/mesh_block_task.cpp` — the MeshBlockTask hook block
+- `terrain/fixed_lod/voxel_terrain.h` — nav member variables, `_nav_mesh_manager`, nav property getters/setters
+- `terrain/fixed_lod/voxel_terrain.cpp` — nav `_bind_methods()` entries, lifecycle calls to NavMeshManager
 
 The `voxel_navigation` build option in `common.py` should also check that `MODULE_NAVIGATION_3D_ENABLED` would be true, or at minimum document the dependency.
 
