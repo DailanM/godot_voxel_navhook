@@ -253,9 +253,9 @@ Checks readiness and dispatches build tasks when a chunk and its neighbors are c
   - Tasks dispatch once neighborhoods complete
   - Interior chunks dispatch first, edge chunks later
   - Each chunk dispatches exactly once on initial load
-- [ ] Verify terrain edits trigger re-dispatch for the edited chunk
-- [ ] Verify no duplicate dispatches for the same chunk in steady state
-- [ ] Verify no crashes under concurrent meshing (multiple worker threads calling `on_mesh_built()`)
+- [x] Verify terrain edits trigger re-dispatch for the edited chunk
+- [x] Verify no duplicate dispatches for the same chunk in steady state
+- [x] Verify no crashes under concurrent meshing (multiple worker threads calling `on_mesh_built()`)
 
 ---
 
