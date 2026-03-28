@@ -17,7 +17,8 @@ def register_scons_options(env, is_extension):
     env_vars.Add(BoolVariable("voxel_basic_generators", "Build with basic/example generators", True))
     env_vars.Add(BoolVariable("voxel_mesh_sdf", "Build with mesh voxelization support", True))
     env_vars.Add(BoolVariable("voxel_vox", "Build with support for loading .vox files", True))
-    
+    env_vars.Add(BoolVariable("voxel_navigation", "Build with navigation mesh generation support", True))
+
     if not is_extension:
         env_vars.Add(BoolVariable("tracy", "Build with enabled Tracy Profiler integration", False))
         env_vars.Add(BoolVariable("voxel_fast_noise_2", "Build FastNoise2 support (x86-only)", True))
@@ -50,6 +51,7 @@ def get_sources(env, is_editor_build):
     basic_generators_enabled = env["voxel_basic_generators"]
     voxel_mesh_sdf_enabled = env["voxel_mesh_sdf"]
     voxel_vox_enabled = env["voxel_vox"]
+    navigation_enabled = env["voxel_navigation"]
 
     if not smoosh_meshing_enabled:
         modifiers_enabled = False
@@ -292,6 +294,11 @@ def get_sources(env, is_editor_build):
 
         if is_editor_build:
             sources += ["editor/vox/*.cpp"]
+
+    if navigation_enabled:
+        env.Append(CPPDEFINES={"VOXEL_ENABLE_NAVIGATION": 1})
+
+        sources += ["terrain/navigation/*.cpp"]
 
     def process_glob_paths(p_sources):
         out = []

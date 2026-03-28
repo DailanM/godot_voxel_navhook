@@ -15,6 +15,13 @@
 #include "voxel_mesh_block_vt.h"
 #include "voxel_terrain_multiplayer_synchronizer.h"
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+#include <memory>
+namespace zylann::voxel {
+class NavMeshManager;
+} // namespace zylann::voxel
+#endif
+
 #ifdef TOOLS_ENABLED
 #include "../../util/godot/debug_renderer.h"
 #endif
@@ -82,6 +89,63 @@ public:
 
 	void set_collision_margin(float margin);
 	float get_collision_margin() const;
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+	void set_generate_navigation(bool enabled);
+	bool get_generate_navigation() const;
+
+	void set_navigation_layers(int layers);
+	int get_navigation_layers() const;
+
+	void set_nav_agent_radius(float radius);
+	float get_nav_agent_radius() const;
+
+	void set_nav_agent_height(float height);
+	float get_nav_agent_height() const;
+
+	void set_nav_agent_max_climb(float max_climb);
+	float get_nav_agent_max_climb() const;
+
+	void set_nav_agent_max_slope(float max_slope);
+	float get_nav_agent_max_slope() const;
+
+	void set_nav_cell_size(float cell_size);
+	float get_nav_cell_size() const;
+
+	void set_nav_cell_height(float cell_height);
+	float get_nav_cell_height() const;
+
+	void set_nav_filter_low_hanging(bool enabled);
+	bool get_nav_filter_low_hanging() const;
+
+	void set_nav_filter_ledge_spans(bool enabled);
+	bool get_nav_filter_ledge_spans() const;
+
+	void set_nav_filter_low_height(bool enabled);
+	bool get_nav_filter_low_height() const;
+
+	void set_nav_region_min_size(int size);
+	int get_nav_region_min_size() const;
+
+	void set_nav_region_merge_size(int size);
+	int get_nav_region_merge_size() const;
+
+	void set_nav_edge_max_length(float length);
+	float get_nav_edge_max_length() const;
+
+	void set_nav_edge_max_error(float error);
+	float get_nav_edge_max_error() const;
+
+	void set_nav_detail_sample_dist(float dist);
+	float get_nav_detail_sample_dist() const;
+
+	void set_nav_detail_sample_max_error(float error);
+	float get_nav_detail_sample_max_error() const;
+
+	int add_nav_obstacle(Ref<Mesh> collision_mesh, Transform3D transform, bool walkable = false);
+	void remove_nav_obstacle(int obstacle_id);
+	void update_nav_obstacle_transform(int obstacle_id, Transform3D transform);
+#endif
 
 	int get_max_view_distance() const;
 	void set_max_view_distance(int distance_in_voxels);
@@ -359,6 +423,28 @@ private:
 	unsigned int _collision_layer = 1;
 	unsigned int _collision_mask = 1;
 	float _collision_margin = constants::DEFAULT_COLLISION_MARGIN;
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+	bool _generate_navigation = false;
+	uint32_t _navigation_layers = 1;
+	float _nav_agent_radius = 0.4f;
+	float _nav_agent_height = 1.8f;
+	float _nav_agent_max_climb = 0.3f;
+	float _nav_agent_max_slope = 45.0f;
+	float _nav_cell_size = 0.2f;
+	float _nav_cell_height = 0.1f;
+	bool _nav_filter_low_hanging = true;
+	bool _nav_filter_ledge_spans = true;
+	bool _nav_filter_low_height = true;
+	int _nav_region_min_size = 8;
+	int _nav_region_merge_size = 20;
+	float _nav_edge_max_length = 3.2f;
+	float _nav_edge_max_error = 1.3f;
+	float _nav_detail_sample_dist = 1.2f;
+	float _nav_detail_sample_max_error = 0.1f;
+	std::shared_ptr<NavMeshManager> _nav_mesh_manager;
+#endif
+
 	bool _run_stream_in_editor = true;
 	// bool _stream_enabled = false;
 	bool _block_enter_notification_enabled = false;

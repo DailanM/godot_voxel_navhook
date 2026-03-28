@@ -12,26 +12,26 @@ This document outlines the phased implementation process. Each phase is scoped t
 
 ### 1.1 Build system setup
 
-- [ ] Create `terrain/navigation/` directory
-- [ ] Add `"terrain/navigation/*.cpp"` to `common.py` source list, gated on a new `voxel_navigation` build option
-- [ ] Add `voxel_navigation` option to `config.py` (default enabled)
-- [ ] Add Recast include path to `SCsub`: `env_voxel.Prepend(CPPPATH=["#thirdparty/recastnavigation/Recast/Include"])`
-- [ ] Gate the include path on `voxel_navigation` being enabled
-- [ ] Verify build compiles with `#include <Recast.h>` in a new file
+- [x] Create `terrain/navigation/` directory
+- [x] Add `"terrain/navigation/*.cpp"` to `common.py` source list, gated on a new `voxel_navigation` build option
+- [x] Add `voxel_navigation` option to `config.py` (default enabled)
+- [x] Add Recast include path to `SCsub`: `env_voxel.Prepend(CPPPATH=["#thirdparty/recastnavigation/Recast/Include"])`
+- [x] Gate the include path on `voxel_navigation` being enabled
+- [x] Verify build compiles with `#include <Recast.h>` in a new file
 
 ### 1.2 NavMeshManager skeleton
 
 Central coordinator for navmesh state, caching, and dispatch. See [plan reference — NavMeshManager](navmesh_integration_plan_reference.md#navmeshmanager) for the full class definition.
 
-- [ ] Create `terrain/navigation/nav_mesh_manager.h`
+- [x] Create `terrain/navigation/nav_mesh_manager.h`
   - Class declaration with all public/private members from the plan reference
   - All method signatures declared but not implemented (empty bodies or stubs)
-  - `#ifdef MODULE_NAVIGATION_3D_ENABLED` guard around the whole file
+  - `#ifdef VOXEL_ENABLE_NAVIGATION` guard around the whole file
   - `NavChunkData` struct definition
   - `NavChunkEntry` struct (with generation counter)
   - `ObstacleEntry` struct
   - All member variables: `_chunk_cache`, `_obstacles`, `_region_rids`, `_applied_generations`, mutexes, config fields
-- [ ] Create `terrain/navigation/nav_mesh_manager.cpp`
+- [x] Create `terrain/navigation/nav_mesh_manager.cpp`
   - Stub implementations for all methods (just return defaults / do nothing)
   - `on_mesh_built()`: empty (will be implemented in Phase 3)
   - `add_obstacle()` / `remove_obstacle()` / `update_obstacle_transform()`: empty stubs returning 0 / doing nothing
@@ -43,12 +43,12 @@ Central coordinator for navmesh state, caching, and dispatch. See [plan referenc
 
 Threaded task that runs the Recast pipeline for a single chunk. See [plan reference — NavMeshBuildTask](navmesh_integration_plan_reference.md#navmeshbuildtask) for the full class definition.
 
-- [ ] Create `terrain/navigation/nav_mesh_build_task.h`
+- [x] Create `terrain/navigation/nav_mesh_build_task.h`
   - Class declaration inheriting `IThreadedTask`
   - All input/output fields from the plan reference
   - `build_generation` field
   - `std::shared_ptr<NavMeshManager>` field
-- [ ] Create `terrain/navigation/nav_mesh_build_task.cpp`
+- [x] Create `terrain/navigation/nav_mesh_build_task.cpp`
   - `run()`: empty stub
   - `apply_result()`: empty stub
   - `get_priority()`: return `TaskPriority::max()`
@@ -59,9 +59,9 @@ Threaded task that runs the Recast pipeline for a single chunk. See [plan refere
 
 Propagates the NavMeshManager to worker threads. See [plan reference — MeshingDependency Modification](navmesh_integration_plan_reference.md#meshingdependency-modification) for the modified struct.
 
-- [ ] Add `std::shared_ptr<NavMeshManager> nav_mesh_manager;` field to `MeshingDependency` in `engine/meshing_dependency.h` (gated on `#ifdef MODULE_NAVIGATION_3D_ENABLED`)
-- [ ] Update `MeshingDependency::reset()` signature to accept an optional `nav_mesh_manager` parameter (default `nullptr`)
-- [ ] Update all existing call sites of `MeshingDependency::reset()` in:
+- [x] Add `std::shared_ptr<NavMeshManager> nav_mesh_manager;` field to `MeshingDependency` in `engine/meshing_dependency.h` (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`)
+- [x] Update `MeshingDependency::reset()` signature to accept an optional `nav_mesh_manager` parameter (default `nullptr`)
+- [x] Update all existing call sites of `MeshingDependency::reset()` in:
   - `terrain/fixed_lod/voxel_terrain.cpp` (lines 184, 327, 727 — search for `MeshingDependency::reset`)
   - `terrain/variable_lod/voxel_lod_terrain.cpp` (lines 337, 408, 710 — search for `MeshingDependency::reset`)
   - Pass `nullptr` for nav_mesh_manager at existing call sites for now
@@ -70,7 +70,7 @@ Propagates the NavMeshManager to worker threads. See [plan reference — Meshing
 
 Inspector-exposed Recast parameters on the terrain node. See [plan reference — Exposed Properties](navmesh_integration_plan_reference.md#exposed-properties) for property groups and derivation logic.
 
-- [ ] Add navigation member variables to `VoxelTerrain` (in `terrain/fixed_lod/voxel_terrain.h`), gated on `#ifdef MODULE_NAVIGATION_3D_ENABLED`:
+- [x] Add navigation member variables to `VoxelTerrain` (in `terrain/fixed_lod/voxel_terrain.h`), gated on `#ifdef VOXEL_ENABLE_NAVIGATION`:
   ```cpp
   // Navigation
   bool _generate_navigation = false;
@@ -92,30 +92,30 @@ Inspector-exposed Recast parameters on the terrain node. See [plan reference —
   float _nav_detail_sample_max_error = 0.1f;
   std::shared_ptr<NavMeshManager> _nav_mesh_manager;
   ```
-- [ ] Add getter/setter methods for each property
+- [x] Add getter/setter methods for each property
   - Setters should `WARN_PRINT` if a float is set to <= 0 (for properties where that's invalid)
   - Setters don't trigger rebuilds yet (Phase 3)
-- [ ] Add `_bind_methods()` entries for all properties with `ADD_GROUP` inspector grouping (gated on `#ifdef MODULE_NAVIGATION_3D_ENABLED`)
+- [x] Add `_bind_methods()` entries for all properties with `ADD_GROUP` inspector grouping (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`)
   - `"Navigation"` group: `generate_navigation`, `navigation_layers` (PROPERTY_HINT_LAYERS_3D_NAVIGATION)
   - `"Navigation Agent"` group with prefix `"nav_agent_"`: radius, height, max_climb, max_slope
   - `"Navigation Advanced"` group with prefix `"nav_"`: cell_size, cell_height, filters, region sizes, edge params, detail params
-- [ ] Add obstacle API method bindings: `add_nav_obstacle` (with `walkable` parameter, default `false`), `remove_nav_obstacle`, `update_nav_obstacle_transform`
+- [x] Add obstacle API method bindings: `add_nav_obstacle` (with `walkable` parameter, default `false`), `remove_nav_obstacle`, `update_nav_obstacle_transform`
   - Stub implementations that return 0 / do nothing for now
 
 ### 1.6 VoxelNavViewer skeleton
 
 Controls where navmesh is generated by proximity. Uses the same **global registry pattern** as `VoxelViewer` — registers with a central manager, not by walking the scene tree. See [plan reference — Navigation Viewer](navmesh_integration_plan_reference.md#navigation-viewer).
 
-- [ ] Create `terrain/navigation/voxel_nav_viewer.h`
+- [x] Create `terrain/navigation/voxel_nav_viewer.h`
   - Inherits `Node3D`
   - Properties: `nav_distance` (unsigned int, default 64), `enabled_in_editor` (bool, default false)
   - Internal: `NavViewerID _viewer_id` — a `SlotMapKey` type matching the `ViewerID` pattern in `engine/ids.h`
-- [ ] Create `terrain/navigation/voxel_nav_viewer.cpp`
+- [x] Create `terrain/navigation/voxel_nav_viewer.cpp`
   - `NOTIFICATION_ENTER_TREE`: register with `NavMeshManager`'s global nav viewer registry via `NavMeshManager::add_nav_viewer()` (skip if in editor and `!_enabled_in_editor`). If `_pending_deferred_unregistration`, reuse existing ID instead of creating a new one.
   - `NOTIFICATION_EXIT_TREE`: **deferred** unregistration matching `VoxelViewer`'s pattern — set `_pending_deferred_unregistration = true` and schedule a deferred callback. The callback checks `is_inside_tree()` before actually removing (handles reparenting safely).
   - `NOTIFICATION_TRANSFORM_CHANGED`: update position in registry via `NavMeshManager::update_nav_viewer_position()`
   - `_bind_methods()`: expose `nav_distance`, `enabled_in_editor`
-- [ ] Add nav viewer registry to `NavMeshManager`:
+- [x] Add nav viewer registry to `NavMeshManager`:
   - `SlotMap<NavViewerState>` with position and distance per viewer (matching the `VoxelEngine::Viewer` storage pattern)
   - `add_nav_viewer()` / `remove_nav_viewer()` / `update_nav_viewer_position()` methods
   - `_is_within_nav_range(Vector3i chunk_pos)` iterates all registered nav viewers
@@ -123,13 +123,13 @@ Controls where navmesh is generated by proximity. Uses the same **global registr
 
 ### 1.7 Verification
 
-- [ ] Build the project successfully with `scons` (no compile errors)
-- [ ] Open the editor and verify:
+- [x] Build the project successfully with `scons` (no compile errors)
+- [x] Open the editor and verify:
   - Navigation properties appear in the inspector for VoxelTerrain
   - Properties are grouped correctly (Navigation, Navigation Agent, Navigation Advanced)
   - `navigation_layers` shows the layer mask editor
   - Default values display correctly in the inspector
-- [ ] Verify that setting `generate_navigation = true` doesn't crash (it's a no-op at this point)
+- [x] Verify that setting `generate_navigation = true` doesn't crash (it's a no-op at this point)
 
 ---
 
@@ -158,7 +158,7 @@ Controls where navmesh is generated by proximity. Uses the same **global registr
 Extracts collision triangles from the mesher and forwards them to `NavMeshManager`. See [plan reference — MeshBlockTask Hook Point](navmesh_integration_plan_reference.md#meshblocktask-hook-point) for code snippet and rationale.
 
 - [ ] Inside `MeshBlockTask::build_mesh()` in `meshers/mesh_block_task.cpp`, after the detail texture scheduling block (~line 579), add the nav hook:
-  - Gate on `#ifdef MODULE_NAVIGATION_3D_ENABLED`
+  - Gate on `#ifdef VOXEL_ENABLE_NAVIGATION`
   - Check `meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0`
   - Explicitly check the mesher is Transvoxel via `try_get_as(mesher, transvoxel_mesher)`
   - Check `_surfaces_output.collision_surface.submesh_vertex_end > 0` (non-empty mesh)

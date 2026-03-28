@@ -487,13 +487,13 @@ These follow the same pattern as `VoxelMeshBlockVT` (`terrain/fixed_lod/voxel_me
 
 ## MeshingDependency Modification
 
-`MeshingDependency` gains a nullable `nav_mesh_manager` field (gated on `#ifdef MODULE_NAVIGATION_3D_ENABLED`). This is the mechanism by which worker threads access the NavMeshManager:
+`MeshingDependency` gains a nullable `nav_mesh_manager` field (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`). This is the mechanism by which worker threads access the NavMeshManager:
 
 ```cpp
 struct MeshingDependency {
     Ref<VoxelMesher> mesher;
     Ref<VoxelGenerator> generator;
-#ifdef MODULE_NAVIGATION_3D_ENABLED
+#ifdef VOXEL_ENABLE_NAVIGATION
     std::shared_ptr<NavMeshManager> nav_mesh_manager; // NEW — nullable for opt-in
 #endif
     bool valid = true;
@@ -528,7 +528,7 @@ Inside `MeshBlockTask::build_mesh()`, after the detail texture scheduling block 
 
 ```cpp
 // In MeshBlockTask::build_mesh(), after the detail texture scheduling block:
-#ifdef MODULE_NAVIGATION_3D_ENABLED
+#ifdef VOXEL_ENABLE_NAVIGATION
 if (meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0) {
     // Explicit Transvoxel mesher check — do NOT rely on implicit mesher type.
     // Without this, the thread-local cache could contain stale data from a
@@ -571,7 +571,7 @@ if (meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0) {
 - The `submesh_vertex_end` / `submesh_index_end` bounds exclude transition mesh vertices used for LOD stitching — these must NOT be included in nav generation.
 - `get_mesh_cache_from_current_thread()` returns data that's only valid until the next `build()` call on that thread. We copy immediately via `assign()`, which is fine.
 - In double-precision builds, the thread cache already uses `Vector3f` (32-bit), which is what Recast expects. No conversion needed.
-- Gated on `MODULE_NAVIGATION_3D_ENABLED` for builds without the navigation module.
+- Gated on `VOXEL_ENABLE_NAVIGATION` for builds without the navigation module.
 - The Transvoxel mesher check is **explicit** via `try_get_as()`, matching the detail texture code pattern at line 531. This prevents reading stale thread-local cache data if a non-Transvoxel mesher is used.
 - **Vertex coordinate space:** The Transvoxel mesher outputs vertices in **chunk-local space** (origin at the chunk's corner, range 0 to `mesh_block_size`). These must be converted to world space before being used in the Recast pipeline, since chunks and their neighbors need to share a common coordinate system. The conversion is a simple inline offset: `world_vertex = local_vertex + chunk_position * mesh_block_size`. This follows the same convention used throughout godot-voxel (e.g., `VoxelMeshBlockVT` computes `_position_in_voxels = bpos * size` for its world-space translation). The implementer should apply this offset either at capture time (in this hook, before storing in `NavChunkData`) or at rasterization time (in `NavMeshBuildTask::run()`). Doing it at capture time is simpler since each chunk only needs its own offset.
 
@@ -1059,28 +1059,25 @@ env_voxel.Prepend(CPPPATH=["#thirdparty/recastnavigation/Recast/Include"])
 
 ### Compile-Time Guards
 
-All navigation code should be gated on `MODULE_NAVIGATION_3D_ENABLED` (defined in `modules/modules_enabled.gen.h` when the navigation_3d module is active):
+All navigation code is gated on `VOXEL_ENABLE_NAVIGATION`, which is defined as a CPPDEFINE by `common.py` when the `voxel_navigation` build option is enabled. This is the module's own define — we do **not** use `MODULE_NAVIGATION_3D_ENABLED` from Godot's `modules/modules_enabled.gen.h`, because that header is not automatically included in module compilation units.
 
 ```cpp
-#ifdef MODULE_NAVIGATION_3D_ENABLED
+#ifdef VOXEL_ENABLE_NAVIGATION
 #include <Recast.h>
 // ... nav code ...
 #endif
 ```
 
-This ensures the module compiles cleanly when:
-- `disable_navigation_3d=yes` is set
-- `disable_3d=yes` is set (cascades into disabling navigation_3d)
-- `builtin_recastnavigation=no` with missing system library
+To disable navigation compilation, build with `voxel_navigation=no`. This ensures the module compiles cleanly even if Recast headers are unavailable.
 
-**Files requiring `#ifdef MODULE_NAVIGATION_3D_ENABLED` guards:**
+**Note:** The `voxel_navigation` option requires that Godot's `navigation_3d` module is enabled (provides Recast symbols at link time). If `navigation_3d` is disabled, `voxel_navigation` should also be disabled.
+
+**Files requiring `#ifdef VOXEL_ENABLE_NAVIGATION` guards:**
 - `terrain/navigation/*.h` and `*.cpp` — entire files (nav-only code)
 - `engine/meshing_dependency.h` — the `nav_mesh_manager` field
 - `meshers/mesh_block_task.cpp` — the MeshBlockTask hook block
 - `terrain/fixed_lod/voxel_terrain.h` — nav member variables, `_nav_mesh_manager`, nav property getters/setters
 - `terrain/fixed_lod/voxel_terrain.cpp` — nav `_bind_methods()` entries, lifecycle calls to NavMeshManager
-
-The `voxel_navigation` build option in `common.py` should also check that `MODULE_NAVIGATION_3D_ENABLED` would be true, or at minimum document the dependency.
 
 ---
 

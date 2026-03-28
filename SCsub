@@ -88,6 +88,13 @@ if env["tracy"]:
 	]
 
 # ----------------------------------------------------------------------------------------------------------------------
+# Navigation mesh generation (Recast)
+
+if env["voxel_navigation"]:
+	# Add Recast include path (headers only — symbols come from libmodule_navigation_3d.a)
+	env_voxel.Prepend(CPPPATH=["#thirdparty/recastnavigation/Recast/Include"])
+
+# ----------------------------------------------------------------------------------------------------------------------
 
 for f in voxel_files:
 	env_voxel.add_source_files(env.modules_sources, f)

@@ -353,6 +353,196 @@ void VoxelTerrain::set_generate_collisions(bool enabled) {
 	_generate_collisions = enabled;
 }
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+
+void VoxelTerrain::set_generate_navigation(bool enabled) {
+	_generate_navigation = enabled;
+	// Lifecycle management will be added in Phase 2
+}
+
+bool VoxelTerrain::get_generate_navigation() const {
+	return _generate_navigation;
+}
+
+void VoxelTerrain::set_navigation_layers(int layers) {
+	_navigation_layers = layers;
+}
+
+int VoxelTerrain::get_navigation_layers() const {
+	return _navigation_layers;
+}
+
+void VoxelTerrain::set_nav_agent_radius(float radius) {
+	if (radius <= 0.0f) {
+		WARN_PRINT("nav_agent_radius must be greater than 0");
+	}
+	_nav_agent_radius = radius;
+}
+
+float VoxelTerrain::get_nav_agent_radius() const {
+	return _nav_agent_radius;
+}
+
+void VoxelTerrain::set_nav_agent_height(float height) {
+	if (height <= 0.0f) {
+		WARN_PRINT("nav_agent_height must be greater than 0");
+	}
+	_nav_agent_height = height;
+}
+
+float VoxelTerrain::get_nav_agent_height() const {
+	return _nav_agent_height;
+}
+
+void VoxelTerrain::set_nav_agent_max_climb(float max_climb) {
+	if (max_climb <= 0.0f) {
+		WARN_PRINT("nav_agent_max_climb must be greater than 0");
+	}
+	_nav_agent_max_climb = max_climb;
+}
+
+float VoxelTerrain::get_nav_agent_max_climb() const {
+	return _nav_agent_max_climb;
+}
+
+void VoxelTerrain::set_nav_agent_max_slope(float max_slope) {
+	if (max_slope <= 0.0f) {
+		WARN_PRINT("nav_agent_max_slope must be greater than 0");
+	}
+	_nav_agent_max_slope = max_slope;
+}
+
+float VoxelTerrain::get_nav_agent_max_slope() const {
+	return _nav_agent_max_slope;
+}
+
+void VoxelTerrain::set_nav_cell_size(float cell_size) {
+	if (cell_size <= 0.0f) {
+		WARN_PRINT("nav_cell_size must be greater than 0");
+	}
+	_nav_cell_size = cell_size;
+}
+
+float VoxelTerrain::get_nav_cell_size() const {
+	return _nav_cell_size;
+}
+
+void VoxelTerrain::set_nav_cell_height(float cell_height) {
+	if (cell_height <= 0.0f) {
+		WARN_PRINT("nav_cell_height must be greater than 0");
+	}
+	_nav_cell_height = cell_height;
+}
+
+float VoxelTerrain::get_nav_cell_height() const {
+	return _nav_cell_height;
+}
+
+void VoxelTerrain::set_nav_filter_low_hanging(bool enabled) {
+	_nav_filter_low_hanging = enabled;
+}
+
+bool VoxelTerrain::get_nav_filter_low_hanging() const {
+	return _nav_filter_low_hanging;
+}
+
+void VoxelTerrain::set_nav_filter_ledge_spans(bool enabled) {
+	_nav_filter_ledge_spans = enabled;
+}
+
+bool VoxelTerrain::get_nav_filter_ledge_spans() const {
+	return _nav_filter_ledge_spans;
+}
+
+void VoxelTerrain::set_nav_filter_low_height(bool enabled) {
+	_nav_filter_low_height = enabled;
+}
+
+bool VoxelTerrain::get_nav_filter_low_height() const {
+	return _nav_filter_low_height;
+}
+
+void VoxelTerrain::set_nav_region_min_size(int size) {
+	if (size <= 0) {
+		WARN_PRINT("nav_region_min_size must be greater than 0");
+	}
+	_nav_region_min_size = size;
+}
+
+int VoxelTerrain::get_nav_region_min_size() const {
+	return _nav_region_min_size;
+}
+
+void VoxelTerrain::set_nav_region_merge_size(int size) {
+	if (size <= 0) {
+		WARN_PRINT("nav_region_merge_size must be greater than 0");
+	}
+	_nav_region_merge_size = size;
+}
+
+int VoxelTerrain::get_nav_region_merge_size() const {
+	return _nav_region_merge_size;
+}
+
+void VoxelTerrain::set_nav_edge_max_length(float length) {
+	if (length <= 0.0f) {
+		WARN_PRINT("nav_edge_max_length must be greater than 0");
+	}
+	_nav_edge_max_length = length;
+}
+
+float VoxelTerrain::get_nav_edge_max_length() const {
+	return _nav_edge_max_length;
+}
+
+void VoxelTerrain::set_nav_edge_max_error(float error) {
+	if (error <= 0.0f) {
+		WARN_PRINT("nav_edge_max_error must be greater than 0");
+	}
+	_nav_edge_max_error = error;
+}
+
+float VoxelTerrain::get_nav_edge_max_error() const {
+	return _nav_edge_max_error;
+}
+
+void VoxelTerrain::set_nav_detail_sample_dist(float dist) {
+	if (dist <= 0.0f) {
+		WARN_PRINT("nav_detail_sample_dist must be greater than 0");
+	}
+	_nav_detail_sample_dist = dist;
+}
+
+float VoxelTerrain::get_nav_detail_sample_dist() const {
+	return _nav_detail_sample_dist;
+}
+
+void VoxelTerrain::set_nav_detail_sample_max_error(float error) {
+	if (error <= 0.0f) {
+		WARN_PRINT("nav_detail_sample_max_error must be greater than 0");
+	}
+	_nav_detail_sample_max_error = error;
+}
+
+float VoxelTerrain::get_nav_detail_sample_max_error() const {
+	return _nav_detail_sample_max_error;
+}
+
+int VoxelTerrain::add_nav_obstacle(Ref<Mesh> collision_mesh, Transform3D transform, bool walkable) {
+	// Stub — Phase 5
+	return 0;
+}
+
+void VoxelTerrain::remove_nav_obstacle(int obstacle_id) {
+	// Stub — Phase 5
+}
+
+void VoxelTerrain::update_nav_obstacle_transform(int obstacle_id, Transform3D transform) {
+	// Stub — Phase 5
+}
+
+#endif // VOXEL_ENABLE_NAVIGATION
+
 void VoxelTerrain::set_collision_layer(int layer) {
 	_collision_layer = layer;
 	_mesh_map.for_each_block([layer](VoxelMeshBlockVT &block) { //
@@ -2569,6 +2759,108 @@ void VoxelTerrain::_bind_methods() {
 			"get_collision_mask"
 	);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collision_margin"), "set_collision_margin", "get_collision_margin");
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+	ClassDB::bind_method(D_METHOD("set_generate_navigation", "enabled"), &Self::set_generate_navigation);
+	ClassDB::bind_method(D_METHOD("get_generate_navigation"), &Self::get_generate_navigation);
+	ClassDB::bind_method(D_METHOD("set_navigation_layers", "layers"), &Self::set_navigation_layers);
+	ClassDB::bind_method(D_METHOD("get_navigation_layers"), &Self::get_navigation_layers);
+
+	ClassDB::bind_method(D_METHOD("set_nav_agent_radius", "radius"), &Self::set_nav_agent_radius);
+	ClassDB::bind_method(D_METHOD("get_nav_agent_radius"), &Self::get_nav_agent_radius);
+	ClassDB::bind_method(D_METHOD("set_nav_agent_height", "height"), &Self::set_nav_agent_height);
+	ClassDB::bind_method(D_METHOD("get_nav_agent_height"), &Self::get_nav_agent_height);
+	ClassDB::bind_method(D_METHOD("set_nav_agent_max_climb", "max_climb"), &Self::set_nav_agent_max_climb);
+	ClassDB::bind_method(D_METHOD("get_nav_agent_max_climb"), &Self::get_nav_agent_max_climb);
+	ClassDB::bind_method(D_METHOD("set_nav_agent_max_slope", "max_slope"), &Self::set_nav_agent_max_slope);
+	ClassDB::bind_method(D_METHOD("get_nav_agent_max_slope"), &Self::get_nav_agent_max_slope);
+
+	ClassDB::bind_method(D_METHOD("set_nav_cell_size", "cell_size"), &Self::set_nav_cell_size);
+	ClassDB::bind_method(D_METHOD("get_nav_cell_size"), &Self::get_nav_cell_size);
+	ClassDB::bind_method(D_METHOD("set_nav_cell_height", "cell_height"), &Self::set_nav_cell_height);
+	ClassDB::bind_method(D_METHOD("get_nav_cell_height"), &Self::get_nav_cell_height);
+	ClassDB::bind_method(D_METHOD("set_nav_filter_low_hanging", "enabled"), &Self::set_nav_filter_low_hanging);
+	ClassDB::bind_method(D_METHOD("get_nav_filter_low_hanging"), &Self::get_nav_filter_low_hanging);
+	ClassDB::bind_method(D_METHOD("set_nav_filter_ledge_spans", "enabled"), &Self::set_nav_filter_ledge_spans);
+	ClassDB::bind_method(D_METHOD("get_nav_filter_ledge_spans"), &Self::get_nav_filter_ledge_spans);
+	ClassDB::bind_method(D_METHOD("set_nav_filter_low_height", "enabled"), &Self::set_nav_filter_low_height);
+	ClassDB::bind_method(D_METHOD("get_nav_filter_low_height"), &Self::get_nav_filter_low_height);
+	ClassDB::bind_method(D_METHOD("set_nav_region_min_size", "size"), &Self::set_nav_region_min_size);
+	ClassDB::bind_method(D_METHOD("get_nav_region_min_size"), &Self::get_nav_region_min_size);
+	ClassDB::bind_method(D_METHOD("set_nav_region_merge_size", "size"), &Self::set_nav_region_merge_size);
+	ClassDB::bind_method(D_METHOD("get_nav_region_merge_size"), &Self::get_nav_region_merge_size);
+	ClassDB::bind_method(D_METHOD("set_nav_edge_max_length", "length"), &Self::set_nav_edge_max_length);
+	ClassDB::bind_method(D_METHOD("get_nav_edge_max_length"), &Self::get_nav_edge_max_length);
+	ClassDB::bind_method(D_METHOD("set_nav_edge_max_error", "error"), &Self::set_nav_edge_max_error);
+	ClassDB::bind_method(D_METHOD("get_nav_edge_max_error"), &Self::get_nav_edge_max_error);
+	ClassDB::bind_method(D_METHOD("set_nav_detail_sample_dist", "dist"), &Self::set_nav_detail_sample_dist);
+	ClassDB::bind_method(D_METHOD("get_nav_detail_sample_dist"), &Self::get_nav_detail_sample_dist);
+	ClassDB::bind_method(D_METHOD("set_nav_detail_sample_max_error", "error"), &Self::set_nav_detail_sample_max_error);
+	ClassDB::bind_method(D_METHOD("get_nav_detail_sample_max_error"), &Self::get_nav_detail_sample_max_error);
+
+	ClassDB::bind_method(
+			D_METHOD("add_nav_obstacle", "collision_mesh", "transform", "walkable"),
+			&Self::add_nav_obstacle, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("remove_nav_obstacle", "obstacle_id"), &Self::remove_nav_obstacle);
+	ClassDB::bind_method(
+			D_METHOD("update_nav_obstacle_transform", "obstacle_id", "transform"),
+			&Self::update_nav_obstacle_transform);
+
+	ADD_GROUP("Navigation", "");
+
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "generate_navigation"), "set_generate_navigation", "get_generate_navigation");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "navigation_layers", PROPERTY_HINT_LAYERS_3D_NAVIGATION),
+			"set_navigation_layers",
+			"get_navigation_layers");
+
+	ADD_GROUP("Navigation Agent", "nav_agent_");
+
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "nav_agent_radius"), "set_nav_agent_radius", "get_nav_agent_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "nav_agent_height"), "set_nav_agent_height", "get_nav_agent_height");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "nav_agent_max_climb"), "set_nav_agent_max_climb", "get_nav_agent_max_climb");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "nav_agent_max_slope"), "set_nav_agent_max_slope", "get_nav_agent_max_slope");
+
+	ADD_GROUP("Navigation Advanced", "nav_");
+
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "nav_cell_size"), "set_nav_cell_size", "get_nav_cell_size");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "nav_cell_height"), "set_nav_cell_height", "get_nav_cell_height");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "nav_filter_low_hanging"),
+			"set_nav_filter_low_hanging",
+			"get_nav_filter_low_hanging");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "nav_filter_ledge_spans"),
+			"set_nav_filter_ledge_spans",
+			"get_nav_filter_ledge_spans");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "nav_filter_low_height"),
+			"set_nav_filter_low_height",
+			"get_nav_filter_low_height");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "nav_region_min_size"), "set_nav_region_min_size", "get_nav_region_min_size");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "nav_region_merge_size"),
+			"set_nav_region_merge_size",
+			"get_nav_region_merge_size");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "nav_edge_max_length"),
+			"set_nav_edge_max_length",
+			"get_nav_edge_max_length");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "nav_edge_max_error"), "set_nav_edge_max_error", "get_nav_edge_max_error");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "nav_detail_sample_dist"),
+			"set_nav_detail_sample_dist",
+			"get_nav_detail_sample_dist");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "nav_detail_sample_max_error"),
+			"set_nav_detail_sample_max_error",
+			"get_nav_detail_sample_max_error");
+#endif // VOXEL_ENABLE_NAVIGATION
 
 	ADD_GROUP("Materials", "");
 

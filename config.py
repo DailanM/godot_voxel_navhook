@@ -87,6 +87,7 @@ def get_doc_classes():
         "VoxelToolLodTerrain",
         "VoxelToolMultipassGenerator",
         "VoxelToolTerrain",
+        "VoxelNavViewer",
         "VoxelViewer",
         "VoxelVoxLoader",
         "ZN_FastNoiseLite",

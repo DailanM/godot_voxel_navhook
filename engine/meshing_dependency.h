@@ -7,6 +7,10 @@
 
 namespace zylann::voxel {
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+class NavMeshManager;
+#endif
+
 // Shared dependency needed by some asynchronous tasks.
 // It may be passed with a shared_ptr.
 // Pointers inside should not change. If they do, a new instance will be made and old ones will be marked invalid,
@@ -14,6 +18,9 @@ namespace zylann::voxel {
 struct MeshingDependency {
 	Ref<VoxelMesher> mesher;
 	Ref<VoxelGenerator> generator;
+#ifdef VOXEL_ENABLE_NAVIGATION
+	std::shared_ptr<NavMeshManager> nav_mesh_manager;
+#endif
 	bool valid = true;
 
 	static void reset(std::shared_ptr<MeshingDependency> &ref, Ref<VoxelMesher> mesher, Ref<VoxelGenerator> generator) {
@@ -25,6 +32,23 @@ struct MeshingDependency {
 		ref->generator = generator;
 		ref->valid = true;
 	}
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+	static void reset(
+			std::shared_ptr<MeshingDependency> &ref,
+			Ref<VoxelMesher> mesher,
+			Ref<VoxelGenerator> generator,
+			std::shared_ptr<NavMeshManager> nav_mesh_manager) {
+		if (ref != nullptr) {
+			ref->valid = false;
+		}
+		ref = make_shared_instance<MeshingDependency>();
+		ref->mesher = mesher;
+		ref->generator = generator;
+		ref->nav_mesh_manager = nav_mesh_manager;
+		ref->valid = true;
+	}
+#endif
 };
 
 } // namespace zylann::voxel
