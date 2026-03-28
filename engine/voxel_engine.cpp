@@ -243,6 +243,32 @@ bool VoxelEngine::viewer_exists(ViewerID viewer_id) const {
 	return _world.viewers.exists(viewer_id);
 }
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+
+NavViewerID VoxelEngine::add_nav_viewer() {
+	return _world.nav_viewers.add(NavViewer());
+}
+
+void VoxelEngine::remove_nav_viewer(NavViewerID viewer_id) {
+	_world.nav_viewers.remove(viewer_id);
+}
+
+bool VoxelEngine::nav_viewer_exists(NavViewerID viewer_id) const {
+	return _world.nav_viewers.exists(viewer_id);
+}
+
+void VoxelEngine::set_nav_viewer_position(NavViewerID viewer_id, Vector3 position) {
+	NavViewer &viewer = _world.nav_viewers.get(viewer_id);
+	viewer.world_position = position;
+}
+
+void VoxelEngine::set_nav_viewer_distance(NavViewerID viewer_id, unsigned int distance) {
+	NavViewer &viewer = _world.nav_viewers.get(viewer_id);
+	viewer.nav_distance = distance;
+}
+
+#endif // VOXEL_ENABLE_NAVIGATION
+
 void VoxelEngine::push_main_thread_time_spread_task(
 		zylann::ITimeSpreadTask *task,
 		TimeSpreadTaskRunner::Priority priority

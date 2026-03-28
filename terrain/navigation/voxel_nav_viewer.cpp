@@ -2,6 +2,7 @@
 
 #ifdef VOXEL_ENABLE_NAVIGATION
 
+#include "../../engine/voxel_engine.h"
 #include "../../util/godot/classes/engine.h"
 #include "../../util/godot/classes/node.h"
 
@@ -17,8 +18,8 @@ VoxelNavViewer::VoxelNavViewer() {
 
 void VoxelNavViewer::set_nav_distance(unsigned int distance) {
 	_nav_distance = distance;
-	if (is_active() && _nav_mesh_manager != nullptr) {
-		_nav_mesh_manager->update_nav_viewer_distance(_viewer_id, distance);
+	if (is_active()) {
+		VoxelEngine::get_singleton().set_nav_viewer_distance(_viewer_id, distance);
 	}
 }
 
@@ -37,12 +38,12 @@ void VoxelNavViewer::set_enabled_in_editor(bool enable) {
 	if (Engine::get_singleton()->is_editor_hint()) {
 		set_notify_transform(_enabled_in_editor);
 
-		if (is_inside_tree() && _nav_mesh_manager != nullptr) {
+		if (is_inside_tree()) {
 			if (_enabled_in_editor) {
-				_viewer_id = _nav_mesh_manager->add_nav_viewer();
+				_viewer_id = VoxelEngine::get_singleton().add_nav_viewer();
 				sync_all_parameters();
 			} else {
-				_nav_mesh_manager->remove_nav_viewer(_viewer_id);
+				VoxelEngine::get_singleton().remove_nav_viewer(_viewer_id);
 			}
 		}
 	}
@@ -53,34 +54,28 @@ bool VoxelNavViewer::is_enabled_in_editor() const {
 	return _enabled_in_editor;
 }
 
-void VoxelNavViewer::set_nav_mesh_manager(std::shared_ptr<NavMeshManager> manager) {
-	_nav_mesh_manager = manager;
-}
-
 void VoxelNavViewer::sync_all_parameters() {
-	if (_nav_mesh_manager == nullptr) {
-		return;
-	}
-	_nav_mesh_manager->update_nav_viewer_position(_viewer_id, get_global_transform().origin);
-	_nav_mesh_manager->update_nav_viewer_distance(_viewer_id, _nav_distance);
+	VoxelEngine &ve = VoxelEngine::get_singleton();
+	ve.set_nav_viewer_position(_viewer_id, get_global_transform().origin);
+	ve.set_nav_viewer_distance(_viewer_id, _nav_distance);
 }
 
 void VoxelNavViewer::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
 			if (!Engine::get_singleton()->is_editor_hint() || _enabled_in_editor) {
-				if (_nav_mesh_manager != nullptr) {
-					if (!_pending_deferred_unregistration) {
-						_viewer_id = _nav_mesh_manager->add_nav_viewer();
-					}
-					sync_all_parameters();
+				if (!_pending_deferred_unregistration) {
+					_viewer_id = VoxelEngine::get_singleton().add_nav_viewer();
+				} else {
+					ZN_ASSERT_RETURN(VoxelEngine::get_singleton().nav_viewer_exists(_viewer_id));
 				}
+				sync_all_parameters();
 			}
 		} break;
 
 		case NOTIFICATION_EXIT_TREE:
 			if (!Engine::get_singleton()->is_editor_hint() || _enabled_in_editor) {
-				if (_nav_mesh_manager != nullptr && !_pending_deferred_unregistration) {
+				if (!_pending_deferred_unregistration) {
 					_pending_deferred_unregistration = true;
 					callable_mp_static(&VoxelNavViewer::unregister_deferred_callback)
 							.bind(get_instance_id(), Vector2i(_viewer_id.index, _viewer_id.version.value))
@@ -90,9 +85,9 @@ void VoxelNavViewer::_notification(int p_what) {
 			break;
 
 		case NOTIFICATION_TRANSFORM_CHANGED:
-			if (is_active() && _nav_mesh_manager != nullptr) {
+			if (is_active()) {
 				const Vector3 pos = get_global_transform().origin;
-				_nav_mesh_manager->update_nav_viewer_position(_viewer_id, pos);
+				VoxelEngine::get_singleton().set_nav_viewer_position(_viewer_id, pos);
 			}
 			break;
 
@@ -111,15 +106,12 @@ void VoxelNavViewer::unregister_deferred_callback(const int64_t viewer_node_id, 
 			return;
 		}
 	}
-
-	// The node got removed and not added back, or was destroyed.
-	// We need the manager to remove the viewer, but we may not have it if the viewer was orphaned.
-	if (viewer != nullptr && viewer->_nav_mesh_manager != nullptr) {
-		NavViewerID viewer_id;
-		viewer_id.index = encoded_viewer_id.x;
-		viewer_id.version.value = encoded_viewer_id.y;
-		viewer->_nav_mesh_manager->remove_nav_viewer(viewer_id);
-	}
+	// The node got removed and not added back, or was destroyed
+	NavViewerID viewer_id;
+	viewer_id.index = encoded_viewer_id.x;
+	viewer_id.version.value = encoded_viewer_id.y;
+	ZN_ASSERT_RETURN(VoxelEngine::get_singleton().nav_viewer_exists(viewer_id));
+	VoxelEngine::get_singleton().remove_nav_viewer(viewer_id);
 }
 
 bool VoxelNavViewer::is_active() const {

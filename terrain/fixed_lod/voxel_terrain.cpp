@@ -1008,6 +1008,10 @@ void VoxelTerrain::stop_updater() {
 	// Invalidate pending tasks
 #ifdef VOXEL_ENABLE_NAVIGATION
 	MeshingDependency::reset(_meshing_dependency, _mesher, get_generator(), _nav_mesh_manager);
+	// Clear stale nav chunk cache so regeneration doesn't dispatch builds with old geometry
+	if (_nav_mesh_manager) {
+		_nav_mesh_manager->clear_all();
+	}
 #else
 	MeshingDependency::reset(_meshing_dependency, _mesher, get_generator());
 #endif

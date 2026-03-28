@@ -7,6 +7,9 @@ namespace zylann::voxel {
 
 typedef SlotMapKey<uint16_t, uint16_t> VolumeID;
 typedef SlotMapKey<uint16_t, uint16_t> ViewerID;
+#ifdef VOXEL_ENABLE_NAVIGATION
+typedef SlotMapKey<uint16_t, uint16_t> NavViewerID;
+#endif
 
 } // namespace zylann::voxel
 

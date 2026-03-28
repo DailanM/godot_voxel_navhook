@@ -3,7 +3,7 @@
 
 #ifdef VOXEL_ENABLE_NAVIGATION
 
-#include "nav_mesh_manager.h"
+#include "../../engine/ids.h"
 #include "../../util/godot/classes/node_3d.h"
 
 namespace zylann::voxel {
@@ -21,8 +21,6 @@ public:
 	void set_enabled_in_editor(bool enable);
 	bool is_enabled_in_editor() const;
 
-	void set_nav_mesh_manager(std::shared_ptr<NavMeshManager> manager);
-
 protected:
 	void _notification(int p_what);
 
@@ -38,7 +36,6 @@ private:
 	unsigned int _nav_distance = 64;
 	bool _enabled_in_editor = false;
 	bool _pending_deferred_unregistration = false;
-	std::shared_ptr<NavMeshManager> _nav_mesh_manager;
 };
 
 } // namespace zylann::voxel

@@ -24,8 +24,6 @@
 
 namespace zylann::voxel {
 
-typedef SlotMapKey<uint16_t, uint16_t> NavViewerID;
-
 struct NavChunkData {
 	StdVector<Vector3f> positions;
 	StdVector<int32_t> indices;
@@ -66,17 +64,6 @@ public:
 	// Navigation map RID
 	RID _nav_map_rid;
 
-	// --- Navigation viewer registry ---
-	struct NavViewerState {
-		Vector3 world_position;
-		unsigned int nav_distance = 64;
-	};
-
-	NavViewerID add_nav_viewer();
-	void remove_nav_viewer(NavViewerID viewer_id);
-	void update_nav_viewer_position(NavViewerID viewer_id, Vector3 position);
-	void update_nav_viewer_distance(NavViewerID viewer_id, unsigned int distance);
-
 	// --- Obstacle entry (public for task snapshot) ---
 	struct ObstacleEntry {
 		int id = 0;
@@ -87,7 +74,7 @@ public:
 	};
 
 private:
-	// --- Lock ordering: _cache_mutex -> _obstacle_mutex -> _viewer_mutex ---
+	// --- Lock ordering: _cache_mutex -> _obstacle_mutex ---
 
 	struct NavChunkEntry {
 		NavChunkData data;
@@ -99,9 +86,6 @@ private:
 	Mutex _obstacle_mutex;
 	HashMap<int, ObstacleEntry> _obstacles;
 	int _next_obstacle_id = 0;
-
-	Mutex _viewer_mutex;
-	SlotMap<NavViewerState, uint16_t, uint16_t> _nav_viewers;
 
 	// Active NavigationServer3D regions (main thread only)
 	HashMap<Vector3i, RID> _region_rids;

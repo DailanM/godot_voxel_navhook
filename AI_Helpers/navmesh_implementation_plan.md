@@ -208,11 +208,11 @@ Extracts collision triangles from the mesher and forwards them to `NavMeshManage
 
 Ensures border geometry is available before building. See [plan reference — Border Geometry and Neighbor Readiness](navmesh_integration_plan_reference.md#border-geometry-and-neighbor-readiness).
 
-- [ ] Define `neighbor_offsets` — the set of Vector3i offsets to check (start with 6 axis neighbors; expand to 26 if border overlap requires corners)
-- [ ] Implement `_are_neighbors_ready(Vector3i chunk_pos)`:
+- [x] Define `neighbor_offsets` — the set of Vector3i offsets to check (start with 6 axis neighbors; expand to 26 if border overlap requires corners)
+- [x] Implement `_are_neighbors_ready(Vector3i chunk_pos)`:
   - For each offset in `neighbor_offsets`, check if `_chunk_cache.find(chunk_pos + offset)` exists
   - Return true only if all neighbors have cached data
-- [ ] Implement `_is_within_nav_range(Vector3i chunk_pos)`:
+- [x] Implement `_is_within_nav_range(Vector3i chunk_pos)`:
   - Compute chunk world center from `chunk_pos * mesh_block_size + mesh_block_size / 2`
   - Check against all registered navigation viewers: return true if the chunk is within `nav_distance` of **any** `VoxelNavViewer`
   - Read the nav viewer registry under its mutex (viewers update on main thread, this runs on worker threads)
@@ -221,14 +221,14 @@ Ensures border geometry is available before building. See [plan reference — Bo
 
 Checks readiness and dispatches build tasks when a chunk and its neighbors are cached. See [plan reference — Key Behaviors](navmesh_integration_plan_reference.md#key-behaviors) for code and dispatch flow.
 
-- [ ] Complete `on_mesh_built()` implementation:
+- [x] Complete `on_mesh_built()` implementation:
   - After caching data, call `_try_dispatch_nav_build(chunk_pos)`
   - Also call `_try_dispatch_nav_build(chunk_pos + offset)` for each neighbor offset
   - All under `_cache_mutex`
-- [ ] Implement `_try_dispatch_nav_build(Vector3i)`:
+- [x] Implement `_try_dispatch_nav_build(Vector3i)`:
   - Skip if not in cache, not in nav range, or neighbors not ready
   - Otherwise call `_dispatch_nav_build()`
-- [ ] Implement `_dispatch_nav_build(Vector3i, uint32_t generation)`:
+- [x] Implement `_dispatch_nav_build(Vector3i, uint32_t generation)`:
   - Create `NavMeshBuildTask` via `ZN_NEW`
   - Copy chunk triangles and neighbor triangles (already under `_cache_mutex`)
   - Acquire `_obstacle_mutex` for obstacle snapshot. **Lock ordering: `_cache_mutex` must always be acquired before `_obstacle_mutex`** — see [plan reference — Lock Ordering](navmesh_integration_plan_reference.md#lock-ordering) for rationale
@@ -238,17 +238,17 @@ Checks readiness and dispatches build tasks when a chunk and its neighbors are c
 
 ### 3.3 NavMeshBuildTask — stub with logging
 
-- [ ] In `NavMeshBuildTask::run()`:
+- [x] In `NavMeshBuildTask::run()`:
   - Log: chunk position, triangle count, neighbor count, obstacle count
   - Set `result_nav_mesh` to null (no actual Recast work yet)
-- [ ] In `NavMeshBuildTask::apply_result()`:
+- [x] In `NavMeshBuildTask::apply_result()`:
   - Check `nav_mesh_manager && nav_mesh_manager->valid && result_nav_mesh.is_valid()`
   - Call `nav_mesh_manager->apply_nav_result(...)` (which will be a no-op since result is null)
-- [ ] **Note on priority:** `get_priority()` returns `TaskPriority::max()` (lowest priority) for now. This means nav tasks run after all mesh tasks, which may cause noticeable latency before navmesh appears. Priority tuning is deferred to future optimization.
+- [x] **Note on priority:** `get_priority()` returns `TaskPriority::max()` (lowest priority) for now. This means nav tasks run after all mesh tasks, which may cause noticeable latency before navmesh appears. Priority tuning is deferred to future optimization.
 
 ### 3.4 Verification
 
-- [ ] Build compiles
+- [x] Build compiles
 - [ ] With `generate_navigation = true`, verify dispatch logging shows:
   - Tasks dispatch once neighborhoods complete
   - Interior chunks dispatch first, edge chunks later

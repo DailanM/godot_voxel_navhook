@@ -2,10 +2,19 @@
 
 #ifdef VOXEL_ENABLE_NAVIGATION
 
+#include "../../util/io/log.h"
+#include "../../util/string/format.h"
+
 namespace zylann::voxel {
 
 void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
-	// Stub — Phase 4 (Recast pipeline)
+	// Stub — Phase 4 will implement the Recast pipeline here
+	ZN_PRINT_VERBOSE(format("NavMeshBuildTask::run() chunk=({},{},{}) triangles={} neighbors={} obstacles={}",
+			chunk_position.x, chunk_position.y, chunk_position.z,
+			chunk_triangles.indices.size() / 3,
+			neighbor_triangles.size(),
+			obstacles.size()));
+	// result_nav_mesh remains null — no actual Recast work yet
 }
 
 void NavMeshBuildTask::apply_result() {

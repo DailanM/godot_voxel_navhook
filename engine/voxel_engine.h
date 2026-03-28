@@ -199,6 +199,24 @@ public:
 		_world.viewers.for_each_key_value(f);
 	}
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+	struct NavViewer {
+		Vector3 world_position;
+		unsigned int nav_distance = 64;
+	};
+
+	NavViewerID add_nav_viewer();
+	void remove_nav_viewer(NavViewerID viewer_id);
+	bool nav_viewer_exists(NavViewerID viewer_id) const;
+	void set_nav_viewer_position(NavViewerID viewer_id, Vector3 position);
+	void set_nav_viewer_distance(NavViewerID viewer_id, unsigned int distance);
+
+	template <typename F>
+	inline void for_each_nav_viewer(F f) const {
+		_world.nav_viewers.for_each_value(f);
+	}
+#endif
+
 	void push_main_thread_time_spread_task(
 			ITimeSpreadTask *task,
 			TimeSpreadTaskRunner::Priority priority = TimeSpreadTaskRunner::PRIORITY_NORMAL
@@ -334,6 +352,9 @@ private:
 	struct World {
 		SlotMap<Volume, uint16_t, uint16_t> volumes;
 		SlotMap<Viewer, uint16_t, uint16_t> viewers;
+#ifdef VOXEL_ENABLE_NAVIGATION
+		SlotMap<NavViewer, uint16_t, uint16_t> nav_viewers;
+#endif
 
 		// Must be overwritten with a new instance if count changes.
 		std::shared_ptr<PriorityDependency::ViewersData> shared_priority_dependency;

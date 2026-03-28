@@ -2,12 +2,23 @@
 
 #ifdef VOXEL_ENABLE_NAVIGATION
 
+#include "nav_mesh_build_task.h"
+#include "../../engine/voxel_engine.h"
+#include "../../util/godot/classes/engine.h"
 #include "../../util/io/log.h"
 #include "../../util/math/conv.h"
 #include "../../util/string/format.h"
 #include "servers/navigation_3d/navigation_server_3d.h"
 
 namespace zylann::voxel {
+
+// 6 axis neighbors — start simple, expand to 26 if border overlap requires corners
+static const Vector3i neighbor_offsets[6] = {
+	Vector3i(-1, 0, 0), Vector3i(1, 0, 0),
+	Vector3i(0, -1, 0), Vector3i(0, 1, 0),
+	Vector3i(0, 0, -1), Vector3i(0, 0, 1),
+};
+static const int NEIGHBOR_COUNT = 6;
 
 // --- Worker thread ---
 
@@ -21,12 +32,17 @@ void NavMeshManager::on_mesh_built(NavChunkData &&data) {
 	entry.data = std::move(data);
 	entry.generation++;
 
-	// TODO: Remove debug logging after verification
 	ZN_PRINT_VERBOSE(format("NavMeshManager::on_mesh_built() chunk=({},{},{}) verts={} indices={}",
 			chunk_pos.x, chunk_pos.y, chunk_pos.z,
 			entry.data.positions.size(), entry.data.indices.size()));
 
-	// Dispatch logic will be added in Phase 3
+	// Check this chunk and all neighbors for readiness.
+	// When chunk A arrives, it may complete the neighborhood for
+	// itself AND for any neighbor that was waiting on A.
+	_try_dispatch_nav_build(chunk_pos);
+	for (int i = 0; i < NEIGHBOR_COUNT; i++) {
+		_try_dispatch_nav_build(chunk_pos + neighbor_offsets[i]);
+	}
 }
 
 // --- Main thread: obstacles ---
@@ -82,53 +98,102 @@ void NavMeshManager::clear_all() {
 	}
 }
 
-// --- Navigation viewer registry ---
-
-NavViewerID NavMeshManager::add_nav_viewer() {
-	MutexLock lock(_viewer_mutex);
-	NavViewerState state;
-	return _nav_viewers.add(state);
-}
-
-void NavMeshManager::remove_nav_viewer(NavViewerID viewer_id) {
-	MutexLock lock(_viewer_mutex);
-	_nav_viewers.remove(viewer_id);
-}
-
-void NavMeshManager::update_nav_viewer_position(NavViewerID viewer_id, Vector3 position) {
-	MutexLock lock(_viewer_mutex);
-	NavViewerState *state = _nav_viewers.try_get(viewer_id);
-	if (state != nullptr) {
-		state->world_position = position;
-	}
-}
-
-void NavMeshManager::update_nav_viewer_distance(NavViewerID viewer_id, unsigned int distance) {
-	MutexLock lock(_viewer_mutex);
-	NavViewerState *state = _nav_viewers.try_get(viewer_id);
-	if (state != nullptr) {
-		state->nav_distance = distance;
-	}
-}
-
 // --- Helpers ---
 
 bool NavMeshManager::_are_neighbors_ready(Vector3i chunk_pos) const {
-	// Stub — Phase 3
-	return false;
+	// Must be called under _cache_mutex
+	for (int i = 0; i < NEIGHBOR_COUNT; i++) {
+		if (_chunk_cache.find(chunk_pos + neighbor_offsets[i]) == _chunk_cache.end()) {
+			return false;
+		}
+	}
+	return true;
 }
 
 bool NavMeshManager::_is_within_nav_range(Vector3i chunk_pos) const {
-	// Stub — Phase 3
-	return false;
+	// Must be called under _cache_mutex (caller holds it)
+
+	// In the editor, all meshed chunks are nav candidates (no viewer needed)
+	if (Engine::get_singleton()->is_editor_hint()) {
+		return true;
+	}
+
+	Vector3 chunk_center = _chunk_center_world(chunk_pos);
+
+	bool any_viewer = false;
+	VoxelEngine::get_singleton().for_each_nav_viewer([&](const VoxelEngine::NavViewer &viewer) {
+		if (any_viewer) {
+			return;
+		}
+		float dist = chunk_center.distance_to(viewer.world_position);
+		if (dist <= static_cast<float>(viewer.nav_distance)) {
+			any_viewer = true;
+		}
+	});
+
+	return any_viewer;
 }
 
 void NavMeshManager::_try_dispatch_nav_build(Vector3i chunk_pos) {
-	// Stub — Phase 3
+	// Must be called under _cache_mutex
+
+	// Skip chunks outside nav range (but their data stays cached —
+	// they may be needed as border geometry for in-range neighbors)
+	if (!_is_within_nav_range(chunk_pos)) {
+		return;
+	}
+
+	// Skip if this chunk itself has no data yet
+	auto it = _chunk_cache.find(chunk_pos);
+	if (it == _chunk_cache.end()) {
+		return;
+	}
+
+	// Check that all neighbors have cached data
+	if (!_are_neighbors_ready(chunk_pos)) {
+		return;
+	}
+
+	ZN_PRINT_VERBOSE(format("NavMesh: dispatching build for chunk ({},{},{})",
+			chunk_pos.x, chunk_pos.y, chunk_pos.z));
+	_dispatch_nav_build(chunk_pos, it->value.generation);
 }
 
 void NavMeshManager::_dispatch_nav_build(Vector3i chunk_pos, uint32_t generation) {
-	// Stub — Phase 3
+	// Must be called under _cache_mutex
+
+	auto *task = ZN_NEW(NavMeshBuildTask);
+	task->chunk_position = chunk_pos;
+	task->build_generation = generation;
+	task->cfg = recast_config;
+	task->filter_low_hanging = filter_low_hanging;
+	task->filter_ledge_spans = filter_ledge_spans;
+	task->filter_low_height_spans = filter_low_height_spans;
+
+	// Copy this chunk's triangles
+	task->chunk_triangles = _chunk_cache[chunk_pos].data;
+
+	// Copy neighbor triangles
+	for (int i = 0; i < NEIGHBOR_COUNT; i++) {
+		auto it = _chunk_cache.find(chunk_pos + neighbor_offsets[i]);
+		if (it != _chunk_cache.end()) {
+			task->neighbor_triangles.push_back(it->value.data);
+		}
+	}
+
+	// Snapshot overlapping obstacles (lock ordering: _cache_mutex already held -> _obstacle_mutex)
+	AABB expanded_aabb = _chunk_aabb_world(chunk_pos).grow(recast_config.borderSize * recast_config.cs);
+	{
+		MutexLock obs_lock(_obstacle_mutex);
+		for (const KeyValue<int, ObstacleEntry> &kv : _obstacles) {
+			if (expanded_aabb.intersects(kv.value.world_aabb)) {
+				task->obstacles.push_back(kv.value);
+			}
+		}
+	}
+
+	task->nav_mesh_manager = shared_from_this();
+	VoxelEngine::get_singleton().push_async_task(task);
 }
 
 StdVector<Vector3i> NavMeshManager::_get_affected_chunks(const AABB &aabb) {
