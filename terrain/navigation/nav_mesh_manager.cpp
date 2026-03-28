@@ -2,14 +2,31 @@
 
 #ifdef VOXEL_ENABLE_NAVIGATION
 
+#include "../../util/io/log.h"
 #include "../../util/math/conv.h"
+#include "../../util/string/format.h"
+#include "servers/navigation_3d/navigation_server_3d.h"
 
 namespace zylann::voxel {
 
 // --- Worker thread ---
 
 void NavMeshManager::on_mesh_built(NavChunkData &&data) {
-	// Will be implemented in Phase 2/3
+	MutexLock lock(_cache_mutex);
+
+	Vector3i chunk_pos = data.chunk_position;
+
+	// Cache/replace data, bump generation counter
+	NavChunkEntry &entry = _chunk_cache[chunk_pos];
+	entry.data = std::move(data);
+	entry.generation++;
+
+	// TODO: Remove debug logging after verification
+	ZN_PRINT_VERBOSE(format("NavMeshManager::on_mesh_built() chunk=({},{},{}) verts={} indices={}",
+			chunk_pos.x, chunk_pos.y, chunk_pos.z,
+			entry.data.positions.size(), entry.data.indices.size()));
+
+	// Dispatch logic will be added in Phase 3
 }
 
 // --- Main thread: obstacles ---
@@ -36,11 +53,33 @@ void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> na
 // --- Main thread: cleanup ---
 
 void NavMeshManager::remove_chunk(Vector3i chunk_pos) {
-	// Stub — Phase 2
+	// Free region RID if it exists
+	auto region_it = _region_rids.find(chunk_pos);
+	if (region_it != _region_rids.end()) {
+		NavigationServer3D::get_singleton()->free_rid(region_it->value);
+		_region_rids.remove(region_it);
+	}
+
+	_applied_generations.erase(chunk_pos);
+
+	{
+		MutexLock lock(_cache_mutex);
+		_chunk_cache.erase(chunk_pos);
+	}
 }
 
 void NavMeshManager::clear_all() {
-	// Stub — Phase 2
+	// Free all NavigationServer3D region RIDs
+	for (const KeyValue<Vector3i, RID> &kv : _region_rids) {
+		NavigationServer3D::get_singleton()->free_rid(kv.value);
+	}
+	_region_rids.clear();
+	_applied_generations.clear();
+
+	{
+		MutexLock lock(_cache_mutex);
+		_chunk_cache.clear();
+	}
 }
 
 // --- Navigation viewer registry ---

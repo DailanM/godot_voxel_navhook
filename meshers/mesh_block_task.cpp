@@ -19,6 +19,13 @@
 #include "../generators/generate_block_gpu_task.h"
 #endif
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+#include "../terrain/navigation/nav_mesh_manager.h"
+#ifndef VOXEL_ENABLE_SMOOTH_MESHING
+#include "../meshers/transvoxel/voxel_mesher_transvoxel.h"
+#endif
+#endif
+
 namespace zylann::voxel {
 
 namespace {
@@ -575,6 +582,42 @@ void MeshBlockTask::build_mesh() {
 #endif
 
 		VoxelEngine::get_singleton().push_async_task(nm_task);
+	}
+#endif
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+	if (meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0) {
+		Ref<VoxelMesherTransvoxel> nav_transvoxel_mesher;
+		if (zylann::godot::try_get_as(mesher, nav_transvoxel_mesher)) {
+			const VoxelMesher::Output::CollisionSurface &col = _surfaces_output.collision_surface;
+
+			if (_surfaces_output.surfaces.size() > 0 && col.submesh_vertex_end > 0) {
+				NavChunkData nav_data;
+				nav_data.chunk_position = mesh_block_position;
+				nav_data.world_aabb = AABB(
+						to_vec3(mesh_block_position * mesh_block_size),
+						to_vec3(mesh_block_size));
+
+				const transvoxel::MeshArrays &mesh_arrays =
+						VoxelMesherTransvoxel::get_mesh_cache_from_current_thread();
+
+				const int vert_end = col.submesh_vertex_end;
+				const int idx_end = col.submesh_index_end;
+
+				nav_data.positions.resize(vert_end);
+				const Vector3 offset = to_vec3(mesh_block_position * mesh_block_size);
+				for (int i = 0; i < vert_end; i++) {
+					const Vector3f &v = mesh_arrays.vertices[i];
+					nav_data.positions[i] = Vector3f(v.x + offset.x, v.y + offset.y, v.z + offset.z);
+				}
+
+				nav_data.indices.assign(
+						mesh_arrays.indices.begin(),
+						mesh_arrays.indices.begin() + idx_end);
+
+				meshing_dependency->nav_mesh_manager->on_mesh_built(std::move(nav_data));
+			}
+		}
 	}
 #endif
 

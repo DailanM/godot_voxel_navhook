@@ -145,6 +145,11 @@ public:
 	int add_nav_obstacle(Ref<Mesh> collision_mesh, Transform3D transform, bool walkable = false);
 	void remove_nav_obstacle(int obstacle_id);
 	void update_nav_obstacle_transform(int obstacle_id, Transform3D transform);
+
+private:
+	void _recompute_nav_config();
+
+public:
 #endif
 
 	int get_max_view_distance() const;

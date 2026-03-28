@@ -42,6 +42,11 @@
 #include "../instancing/voxel_instancer.h"
 #endif
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+#include "../navigation/nav_mesh_manager.h"
+#include "servers/navigation_3d/navigation_server_3d.h"
+#endif
+
 namespace zylann::voxel {
 
 VoxelTerrain::VoxelTerrain() {
@@ -105,6 +110,13 @@ VoxelTerrain::~VoxelTerrain() {
 	ZN_PRINT_VERBOSE("Destroying VoxelTerrain");
 	_streaming_dependency->valid = false;
 	_meshing_dependency->valid = false;
+#ifdef VOXEL_ENABLE_NAVIGATION
+	if (_nav_mesh_manager) {
+		_nav_mesh_manager->valid = false;
+		_nav_mesh_manager->clear_all();
+		_nav_mesh_manager.reset();
+	}
+#endif
 	VoxelEngine::get_singleton().remove_volume(_volume_id);
 }
 
@@ -181,7 +193,11 @@ void VoxelTerrain::set_generator(Ref<VoxelGenerator> p_generator) {
 
 	_data->set_generator(p_generator);
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+	MeshingDependency::reset(_meshing_dependency, _mesher, p_generator, _nav_mesh_manager);
+#else
 	MeshingDependency::reset(_meshing_dependency, _mesher, p_generator);
+#endif
 	StreamingDependency::reset(_streaming_dependency, get_stream(), p_generator);
 
 #ifdef TOOLS_ENABLED
@@ -324,7 +340,11 @@ void VoxelTerrain::set_mesher(Ref<VoxelMesher> mesher) {
 
 	_mesher = mesher;
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+	MeshingDependency::reset(_meshing_dependency, _mesher, get_generator(), _nav_mesh_manager);
+#else
 	MeshingDependency::reset(_meshing_dependency, _mesher, get_generator());
+#endif
 
 	stop_updater();
 
@@ -356,8 +376,29 @@ void VoxelTerrain::set_generate_collisions(bool enabled) {
 #ifdef VOXEL_ENABLE_NAVIGATION
 
 void VoxelTerrain::set_generate_navigation(bool enabled) {
+	if (_generate_navigation == enabled) {
+		return;
+	}
 	_generate_navigation = enabled;
-	// Lifecycle management will be added in Phase 2
+
+	if (enabled) {
+		_nav_mesh_manager = make_shared_instance<NavMeshManager>();
+		_nav_mesh_manager->mesh_block_size = get_mesh_block_size();
+		_recompute_nav_config();
+
+		if (is_inside_tree()) {
+			_nav_mesh_manager->_nav_map_rid = get_world_3d()->get_navigation_map();
+		}
+
+		MeshingDependency::reset(_meshing_dependency, _mesher, get_generator(), _nav_mesh_manager);
+	} else {
+		if (_nav_mesh_manager) {
+			_nav_mesh_manager->valid = false;
+			_nav_mesh_manager->clear_all();
+			_nav_mesh_manager.reset();
+		}
+		MeshingDependency::reset(_meshing_dependency, _mesher, get_generator());
+	}
 }
 
 bool VoxelTerrain::get_generate_navigation() const {
@@ -366,6 +407,7 @@ bool VoxelTerrain::get_generate_navigation() const {
 
 void VoxelTerrain::set_navigation_layers(int layers) {
 	_navigation_layers = layers;
+	_recompute_nav_config();
 }
 
 int VoxelTerrain::get_navigation_layers() const {
@@ -377,6 +419,7 @@ void VoxelTerrain::set_nav_agent_radius(float radius) {
 		WARN_PRINT("nav_agent_radius must be greater than 0");
 	}
 	_nav_agent_radius = radius;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_agent_radius() const {
@@ -388,6 +431,7 @@ void VoxelTerrain::set_nav_agent_height(float height) {
 		WARN_PRINT("nav_agent_height must be greater than 0");
 	}
 	_nav_agent_height = height;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_agent_height() const {
@@ -399,6 +443,7 @@ void VoxelTerrain::set_nav_agent_max_climb(float max_climb) {
 		WARN_PRINT("nav_agent_max_climb must be greater than 0");
 	}
 	_nav_agent_max_climb = max_climb;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_agent_max_climb() const {
@@ -410,6 +455,7 @@ void VoxelTerrain::set_nav_agent_max_slope(float max_slope) {
 		WARN_PRINT("nav_agent_max_slope must be greater than 0");
 	}
 	_nav_agent_max_slope = max_slope;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_agent_max_slope() const {
@@ -421,6 +467,7 @@ void VoxelTerrain::set_nav_cell_size(float cell_size) {
 		WARN_PRINT("nav_cell_size must be greater than 0");
 	}
 	_nav_cell_size = cell_size;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_cell_size() const {
@@ -432,6 +479,7 @@ void VoxelTerrain::set_nav_cell_height(float cell_height) {
 		WARN_PRINT("nav_cell_height must be greater than 0");
 	}
 	_nav_cell_height = cell_height;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_cell_height() const {
@@ -440,6 +488,7 @@ float VoxelTerrain::get_nav_cell_height() const {
 
 void VoxelTerrain::set_nav_filter_low_hanging(bool enabled) {
 	_nav_filter_low_hanging = enabled;
+	_recompute_nav_config();
 }
 
 bool VoxelTerrain::get_nav_filter_low_hanging() const {
@@ -448,6 +497,7 @@ bool VoxelTerrain::get_nav_filter_low_hanging() const {
 
 void VoxelTerrain::set_nav_filter_ledge_spans(bool enabled) {
 	_nav_filter_ledge_spans = enabled;
+	_recompute_nav_config();
 }
 
 bool VoxelTerrain::get_nav_filter_ledge_spans() const {
@@ -456,6 +506,7 @@ bool VoxelTerrain::get_nav_filter_ledge_spans() const {
 
 void VoxelTerrain::set_nav_filter_low_height(bool enabled) {
 	_nav_filter_low_height = enabled;
+	_recompute_nav_config();
 }
 
 bool VoxelTerrain::get_nav_filter_low_height() const {
@@ -467,6 +518,7 @@ void VoxelTerrain::set_nav_region_min_size(int size) {
 		WARN_PRINT("nav_region_min_size must be greater than 0");
 	}
 	_nav_region_min_size = size;
+	_recompute_nav_config();
 }
 
 int VoxelTerrain::get_nav_region_min_size() const {
@@ -478,6 +530,7 @@ void VoxelTerrain::set_nav_region_merge_size(int size) {
 		WARN_PRINT("nav_region_merge_size must be greater than 0");
 	}
 	_nav_region_merge_size = size;
+	_recompute_nav_config();
 }
 
 int VoxelTerrain::get_nav_region_merge_size() const {
@@ -489,6 +542,7 @@ void VoxelTerrain::set_nav_edge_max_length(float length) {
 		WARN_PRINT("nav_edge_max_length must be greater than 0");
 	}
 	_nav_edge_max_length = length;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_edge_max_length() const {
@@ -500,6 +554,7 @@ void VoxelTerrain::set_nav_edge_max_error(float error) {
 		WARN_PRINT("nav_edge_max_error must be greater than 0");
 	}
 	_nav_edge_max_error = error;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_edge_max_error() const {
@@ -511,6 +566,7 @@ void VoxelTerrain::set_nav_detail_sample_dist(float dist) {
 		WARN_PRINT("nav_detail_sample_dist must be greater than 0");
 	}
 	_nav_detail_sample_dist = dist;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_detail_sample_dist() const {
@@ -522,6 +578,7 @@ void VoxelTerrain::set_nav_detail_sample_max_error(float error) {
 		WARN_PRINT("nav_detail_sample_max_error must be greater than 0");
 	}
 	_nav_detail_sample_max_error = error;
+	_recompute_nav_config();
 }
 
 float VoxelTerrain::get_nav_detail_sample_max_error() const {
@@ -539,6 +596,35 @@ void VoxelTerrain::remove_nav_obstacle(int obstacle_id) {
 
 void VoxelTerrain::update_nav_obstacle_transform(int obstacle_id, Transform3D transform) {
 	// Stub — Phase 5
+}
+
+void VoxelTerrain::_recompute_nav_config() {
+	if (!_nav_mesh_manager) {
+		return;
+	}
+
+	rcConfig &cfg = _nav_mesh_manager->recast_config;
+	memset(&cfg, 0, sizeof(rcConfig));
+
+	cfg.cs = _nav_cell_size;
+	cfg.ch = _nav_cell_height;
+	cfg.walkableSlopeAngle = _nav_agent_max_slope;
+	cfg.walkableHeight = (int)ceilf(_nav_agent_height / cfg.ch);
+	cfg.walkableClimb = (int)ceilf(_nav_agent_max_climb / cfg.ch);
+	cfg.walkableRadius = (int)ceilf(_nav_agent_radius / cfg.cs);
+	cfg.maxEdgeLen = (int)(_nav_edge_max_length / cfg.cs);
+	cfg.maxSimplificationError = _nav_edge_max_error;
+	cfg.minRegionArea = _nav_region_min_size;
+	cfg.mergeRegionArea = _nav_region_merge_size;
+	cfg.maxVertsPerPoly = 6;
+	cfg.detailSampleDist = _nav_detail_sample_dist;
+	cfg.detailSampleMaxError = _nav_detail_sample_max_error;
+	cfg.borderSize = cfg.walkableRadius + 3;
+
+	_nav_mesh_manager->navigation_layers = _navigation_layers;
+	_nav_mesh_manager->filter_low_hanging = _nav_filter_low_hanging;
+	_nav_mesh_manager->filter_ledge_spans = _nav_filter_ledge_spans;
+	_nav_mesh_manager->filter_low_height_spans = _nav_filter_low_height;
 }
 
 #endif // VOXEL_ENABLE_NAVIGATION
@@ -734,6 +820,12 @@ void VoxelTerrain::unload_mesh_block(Vector3i bpos) {
 	}
 #endif
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+	if (_nav_mesh_manager) {
+		_nav_mesh_manager->remove_chunk(bpos);
+	}
+#endif
+
 	// It's possible the block was added as the viewer moved, but did not have the time to receive its first mesh update
 	if (was_loaded) {
 		emit_mesh_block_exited(bpos);
@@ -914,7 +1006,11 @@ void VoxelTerrain::start_updater() {
 
 void VoxelTerrain::stop_updater() {
 	// Invalidate pending tasks
+#ifdef VOXEL_ENABLE_NAVIGATION
+	MeshingDependency::reset(_meshing_dependency, _mesher, get_generator(), _nav_mesh_manager);
+#else
 	MeshingDependency::reset(_meshing_dependency, _mesher, get_generator());
+#endif
 
 	// VoxelEngine::get_singleton().set_volume_mesher(_volume_id, Ref<VoxelMesher>());
 
