@@ -39,10 +39,22 @@ func _process(_delta: float) -> void:
 	_update_path(s, e)
 
 func _update_path(from: Vector3, to: Vector3) -> void:
-	var map_rid = NavigationServer3D.get_maps()[0] if NavigationServer3D.get_maps().size() > 0 else RID()
-	if not map_rid.is_valid():
+	var maps = NavigationServer3D.get_maps()
+	if maps.size() == 0:
+		print("NavPathTester: No navigation maps found")
 		return
+	var map_rid = maps[0]
+	if not map_rid.is_valid():
+		print("NavPathTester: Map RID invalid")
+		return
+	var regions = NavigationServer3D.map_get_regions(map_rid)
+	print("NavPathTester: map has %d regions, querying from %s to %s" % [regions.size(), from, to])
+	var closest_start = NavigationServer3D.map_get_closest_point(map_rid, from)
+	var closest_end = NavigationServer3D.map_get_closest_point(map_rid, to)
+	print("NavPathTester: closest nav point to start: %s (dist %.2f)" % [closest_start, from.distance_to(closest_start)])
+	print("NavPathTester: closest nav point to end: %s (dist %.2f)" % [closest_end, to.distance_to(closest_end)])
 	var path = NavigationServer3D.map_get_path(map_rid, from, to, true, navigation_layers)
+	print("NavPathTester: path has %d points" % path.size())
 	_draw_path(path)
 
 func _draw_path(path: PackedVector3Array) -> void:
