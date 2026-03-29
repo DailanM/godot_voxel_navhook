@@ -146,6 +146,8 @@ public:
 	void remove_nav_obstacle(int obstacle_id);
 	void update_nav_obstacle_transform(int obstacle_id, Transform3D transform);
 
+	Array debug_get_nav_meshes() const;
+
 private:
 	void _recompute_nav_config();
 

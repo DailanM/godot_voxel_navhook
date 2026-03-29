@@ -598,6 +598,13 @@ void VoxelTerrain::update_nav_obstacle_transform(int obstacle_id, Transform3D tr
 	// Stub — Phase 5
 }
 
+Array VoxelTerrain::debug_get_nav_meshes() const {
+	if (!_nav_mesh_manager) {
+		return Array();
+	}
+	return _nav_mesh_manager->debug_get_nav_meshes();
+}
+
 void VoxelTerrain::_recompute_nav_config() {
 	if (!_nav_mesh_manager) {
 		return;
@@ -2912,6 +2919,7 @@ void VoxelTerrain::_bind_methods() {
 	ClassDB::bind_method(
 			D_METHOD("update_nav_obstacle_transform", "obstacle_id", "transform"),
 			&Self::update_nav_obstacle_transform);
+	ClassDB::bind_method(D_METHOD("debug_get_nav_meshes"), &Self::debug_get_nav_meshes);
 
 	ADD_GROUP("Navigation", "");
 

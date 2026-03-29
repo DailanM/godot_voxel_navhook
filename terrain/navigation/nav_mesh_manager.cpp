@@ -72,25 +72,26 @@ void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> na
 
 	NavigationServer3D *ns = NavigationServer3D::get_singleton();
 
-	RID &rid = _region_rids[chunk_pos];
-	if (!rid.is_valid()) {
-		rid = ns->region_create();
-		ns->region_set_map(rid, _nav_map_rid);
-		ns->region_set_navigation_layers(rid, navigation_layers);
-		ns->region_set_enabled(rid, true);
+	RegionEntry &region = _regions[chunk_pos];
+	if (!region.rid.is_valid()) {
+		region.rid = ns->region_create();
+		ns->region_set_map(region.rid, _nav_map_rid);
+		ns->region_set_navigation_layers(region.rid, navigation_layers);
+		ns->region_set_enabled(region.rid, true);
 	}
-	ns->region_set_transform(rid, _chunk_to_world(chunk_pos));
-	ns->region_set_navigation_mesh(rid, nav_mesh);
+	ns->region_set_transform(region.rid, _chunk_to_world(chunk_pos));
+	ns->region_set_navigation_mesh(region.rid, nav_mesh);
+	region.nav_mesh = nav_mesh;
 }
 
 // --- Main thread: cleanup ---
 
 void NavMeshManager::remove_chunk(Vector3i chunk_pos) {
 	// Free region RID if it exists
-	auto region_it = _region_rids.find(chunk_pos);
-	if (region_it != _region_rids.end()) {
-		NavigationServer3D::get_singleton()->free_rid(region_it->value);
-		_region_rids.remove(region_it);
+	auto region_it = _regions.find(chunk_pos);
+	if (region_it != _regions.end()) {
+		NavigationServer3D::get_singleton()->free_rid(region_it->value.rid);
+		_regions.remove(region_it);
 	}
 
 	_applied_generations.erase(chunk_pos);
@@ -103,16 +104,32 @@ void NavMeshManager::remove_chunk(Vector3i chunk_pos) {
 
 void NavMeshManager::clear_all() {
 	// Free all NavigationServer3D region RIDs
-	for (const KeyValue<Vector3i, RID> &kv : _region_rids) {
-		NavigationServer3D::get_singleton()->free_rid(kv.value);
+	for (const KeyValue<Vector3i, RegionEntry> &kv : _regions) {
+		NavigationServer3D::get_singleton()->free_rid(kv.value.rid);
 	}
-	_region_rids.clear();
+	_regions.clear();
 	_applied_generations.clear();
 
 	{
 		MutexLock lock(_cache_mutex);
 		_chunk_cache.clear();
 	}
+}
+
+// --- Debug ---
+
+Array NavMeshManager::debug_get_nav_meshes() const {
+	Array result;
+	for (const KeyValue<Vector3i, RegionEntry> &kv : _regions) {
+		if (kv.value.nav_mesh.is_valid()) {
+			Array entry;
+			entry.resize(2);
+			entry[0] = _chunk_to_world(kv.key);
+			entry[1] = kv.value.nav_mesh;
+			result.push_back(entry);
+		}
+	}
+	return result;
 }
 
 // --- Helpers ---

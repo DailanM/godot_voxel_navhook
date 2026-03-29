@@ -48,6 +48,9 @@ public:
 	void remove_chunk(Vector3i chunk_pos);
 	void clear_all();
 
+	// Debug: returns Array of [Transform3D, NavigationMesh] pairs for visualization
+	Array debug_get_nav_meshes() const;
+
 	// Cancellation
 	bool valid = true;
 
@@ -88,7 +91,11 @@ private:
 	int _next_obstacle_id = 0;
 
 	// Active NavigationServer3D regions (main thread only)
-	HashMap<Vector3i, RID> _region_rids;
+	struct RegionEntry {
+		RID rid;
+		Ref<NavigationMesh> nav_mesh;
+	};
+	HashMap<Vector3i, RegionEntry> _regions;
 
 	// Generation tracking for stale result detection (main thread only)
 	HashMap<Vector3i, uint32_t> _applied_generations;
