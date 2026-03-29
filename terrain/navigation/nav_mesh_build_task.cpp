@@ -24,43 +24,21 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	const int border = cfg.borderSize;
 	const float cs = cfg.cs;
 
-	// Compute Y range from all input geometry
-	float y_min = 1e30f;
-	float y_max = -1e30f;
-
-	auto update_y_range = [&](const NavChunkData &data) {
-		for (const Vector3f &v : data.positions) {
-			if (v.y < y_min) {
-				y_min = v.y;
-			}
-			if (v.y > y_max) {
-				y_max = v.y;
-			}
-		}
-	};
-
-	update_y_range(chunk_triangles);
-	for (const auto &neighbor : neighbor_triangles) {
-		update_y_range(neighbor);
-	}
-
-	if (y_min > y_max) {
-		// No geometry at all
-		return;
-	}
-
-	// Add vertical padding for flat terrain (Recast needs non-zero height range)
-	y_min -= 1.0f;
-	y_max += 1.0f;
-
-	// Chunk world bounds from stored AABB, expanded by borderSize on X/Z
+	// Chunk world bounds from stored AABB
 	const AABB &chunk_aabb = chunk_triangles.world_aabb;
 
+	// Clip Y bounds to the chunk's own vertical extent with padding:
+	// - Below: walkableClimb so agents can step up across Y boundaries
+	// - Above: walkableHeight so ceiling geometry from the chunk above is visible
+	//   for correct clearance rejection
+	const float pad_below = cfg.walkableClimb * cfg.ch;
+	const float pad_above = cfg.walkableHeight * cfg.ch;
+
 	cfg.bmin[0] = chunk_aabb.position.x - border * cs;
-	cfg.bmin[1] = y_min;
+	cfg.bmin[1] = chunk_aabb.position.y - pad_below;
 	cfg.bmin[2] = chunk_aabb.position.z - border * cs;
 	cfg.bmax[0] = chunk_aabb.position.x + chunk_aabb.size.x + border * cs;
-	cfg.bmax[1] = y_max;
+	cfg.bmax[1] = chunk_aabb.position.y + chunk_aabb.size.y + pad_above;
 	cfg.bmax[2] = chunk_aabb.position.z + chunk_aabb.size.z + border * cs;
 
 	rcCalcGridSize(cfg.bmin, cfg.bmax, cfg.cs, &cfg.width, &cfg.height);
