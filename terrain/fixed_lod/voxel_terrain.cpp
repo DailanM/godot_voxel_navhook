@@ -465,9 +465,18 @@ float VoxelTerrain::get_nav_agent_max_slope() const {
 void VoxelTerrain::set_nav_cell_size(float cell_size) {
 	if (cell_size <= 0.0f) {
 		WARN_PRINT("nav_cell_size must be greater than 0");
+		return;
 	}
-	_nav_cell_size = cell_size;
+	const int block_size = get_mesh_block_size();
+	const float snapped = _snap_cell_size_to_block(cell_size, block_size);
+	if (!Math::is_equal_approx(snapped, cell_size)) {
+		WARN_PRINT(vformat("nav_cell_size %.4f does not evenly divide mesh_block_size %d. "
+				"Snapped to %.4f for correct chunk boundary alignment.",
+				cell_size, block_size, snapped));
+	}
+	_nav_cell_size = snapped;
 	_recompute_nav_config();
+	notify_property_list_changed();
 }
 
 float VoxelTerrain::get_nav_cell_size() const {
@@ -603,6 +612,14 @@ Array VoxelTerrain::debug_get_nav_meshes() const {
 		return Array();
 	}
 	return _nav_mesh_manager->debug_get_nav_meshes();
+}
+
+float VoxelTerrain::_snap_cell_size_to_block(float cell_size, int block_size) {
+	// cell_size must evenly divide block_size so that Recast grids align across chunk boundaries.
+	// Find the nearest value where block_size / cell_size is an integer.
+	const float divisions = static_cast<float>(block_size) / cell_size;
+	const int rounded = MAX(1, (int)Math::round(divisions));
+	return static_cast<float>(block_size) / static_cast<float>(rounded);
 }
 
 void VoxelTerrain::_recompute_nav_config() {

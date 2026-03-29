@@ -150,6 +150,7 @@ public:
 
 private:
 	void _recompute_nav_config();
+	static float _snap_cell_size_to_block(float cell_size, int block_size);
 
 public:
 #endif
