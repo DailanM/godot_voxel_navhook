@@ -365,7 +365,7 @@ Checks readiness and dispatches build tasks when a chunk and its neighbors are c
 
 ### 4.1 Recast heightfield setup
 
-- [ ] In `NavMeshBuildTask::run()`:
+- [x] In `NavMeshBuildTask::run()`:
   - Compute `cfg.bmin` / `cfg.bmax` from chunk world position, expanded by `borderSize * cs`
   - Call `rcCalcGridSize()` to set `cfg.width` / `cfg.height`
   - Allocate heightfield with `rcAllocHeightfield()` + `rcCreateHeightfield()`
@@ -373,12 +373,12 @@ Checks readiness and dispatches build tasks when a chunk and its neighbors are c
 
 ### 4.2 Terrain rasterization
 
-- [ ] Implement the `rasterize` lambda (see plan reference):
+- [x] Implement the `rasterize` lambda (see plan reference):
   - `rcMarkWalkableTriangles()` to classify by slope
   - `rcRasterizeTriangles()` into the heightfield
   - Handle empty data gracefully (zero indices → skip)
-- [ ] Rasterize this chunk's triangles
-- [ ] Rasterize all neighbor triangles
+- [x] Rasterize this chunk's triangles
+- [x] Rasterize all neighbor triangles
 
 ### 4.3 Obstacle rasterization
 
@@ -389,60 +389,62 @@ Checks readiness and dispatches build tasks when a chunk and its neighbors are c
   - If `walkable == true`: run `rcMarkWalkableTriangles()` to evaluate slope-based walkability (allows bridges, ramps, rooftops)
   - Rasterize into the same heightfield
 
+  *Note: Obstacle rasterization deferred to Phase 5 (obstacle API). The code structure is in place — the obstacle snapshot is captured and iterated, but mesh extraction is not yet implemented.*
+
 ### 4.4 Filtering
 
-- [ ] Apply filters based on config flags (order matters — see plan reference):
+- [x] Apply filters based on config flags (order matters — see plan reference):
   - `rcFilterLowHangingWalkableObstacles` (if enabled)
   - `rcFilterLedgeSpans` (if enabled, must be AFTER low hanging)
   - `rcFilterWalkableLowHeightSpans` (if enabled)
 
 ### 4.5 Compact, erode, regions
 
-- [ ] `rcBuildCompactHeightfield()`
-- [ ] Free heightfield
-- [ ] `rcErodeWalkableArea()`
-- [ ] `rcBuildDistanceField()`
-- [ ] `rcBuildRegionsMonotone()` (monotone for runtime/streaming performance)
-- [ ] Add error guards at each step
+- [x] `rcBuildCompactHeightfield()`
+- [x] Free heightfield
+- [x] `rcErodeWalkableArea()`
+- [x] `rcBuildDistanceField()`
+- [x] `rcBuildRegionsMonotone()` (monotone for runtime/streaming performance)
+- [x] Add error guards at each step
 
 ### 4.6 Contours, polymesh, detail mesh
 
-- [ ] `rcBuildContours()`
-- [ ] `rcBuildPolyMesh()`
-- [ ] `rcBuildPolyMeshDetail()`
-- [ ] Free intermediate structures (compact heightfield, contour set)
-- [ ] Add error guards
+- [x] `rcBuildContours()`
+- [x] `rcBuildPolyMesh()`
+- [x] `rcBuildPolyMeshDetail()`
+- [x] Free intermediate structures (compact heightfield, contour set)
+- [x] Add error guards
 
 ### 4.7 Convert rcPolyMeshDetail to NavigationMesh
 
 Converts Recast output to Godot's NavigationMesh format. See [plan reference — run() Step 7](navmesh_integration_plan_reference.md#run--recast-pipeline) for conversion code and winding order details.
 
-- [ ] Extract vertices from `dmesh->verts` (float world-space coordinates)
-- [ ] Deduplicate vertices (HashMap-based, matching Godot's approach)
-- [ ] Extract triangles with REVERSED winding order (`[0, 2, 1]` not `[0, 1, 2]`)
-- [ ] Set `cell_size` and `cell_height` on the NavigationMesh resource
-- [ ] Free polymesh and detail mesh
-- [ ] Store result in `result_nav_mesh`
+- [x] Extract vertices from `dmesh->verts` (float world-space coordinates)
+- [x] Deduplicate vertices (HashMap-based, matching Godot's approach)
+- [x] Extract triangles with REVERSED winding order (`[0, 2, 1]` not `[0, 1, 2]`)
+- [x] Set `cell_size` and `cell_height` on the NavigationMesh resource
+- [x] Free polymesh and detail mesh
+- [x] Store result in `result_nav_mesh`
 
 ### 4.8 apply_result() and region registration
 
 Registers the built navmesh with NavigationServer3D. See [plan reference — Region Registration and Edge Stitching](navmesh_integration_plan_reference.md#region-registration-and-edge-stitching) for registration code and edge matching.
 
-- [ ] Implement `NavMeshBuildTask::apply_result()`:
+- [x] Implement `NavMeshBuildTask::apply_result()`:
   - Check validity and non-null result
   - Call `nav_mesh_manager->apply_nav_result(chunk_pos, result, build_generation)`
-- [ ] Implement `NavMeshManager::apply_nav_result()`:
+- [x] Implement `NavMeshManager::apply_nav_result()`:
   - Generation counter check (skip if stale)
   - Create region RID if needed (`region_create`, `region_set_map`, `region_set_navigation_layers`, `region_set_enabled`)
   - Set transform and navigation mesh on the region
   - Update `_applied_generations`
-- [ ] Set navigation map cell size/height on manager initialization:
+- [x] Set navigation map cell size/height on manager initialization:
   - `map_set_cell_size(_nav_map_rid, cfg.cs)`
   - `map_set_cell_height(_nav_map_rid, cfg.ch)`
 
 ### 4.9 Verification
 
-- [ ] Build compiles
+- [x] Build compiles
 - [ ] With `generate_navigation = true` and a Transvoxel terrain:
   - Navigation mesh regions appear (use Godot's debug navigation visualization)
   - Navmesh covers the terrain surface within nav_range

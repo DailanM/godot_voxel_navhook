@@ -63,7 +63,24 @@ void NavMeshManager::update_obstacle_transform(int obstacle_id, Transform3D new_
 // --- Main thread: results ---
 
 void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> nav_mesh, uint32_t build_generation) {
-	// Stub — Phase 4
+	// Skip stale results — a newer build was already applied
+	auto *gen_ptr = _applied_generations.getptr(chunk_pos);
+	if (gen_ptr != nullptr && build_generation <= *gen_ptr) {
+		return;
+	}
+	_applied_generations[chunk_pos] = build_generation;
+
+	NavigationServer3D *ns = NavigationServer3D::get_singleton();
+
+	RID &rid = _region_rids[chunk_pos];
+	if (!rid.is_valid()) {
+		rid = ns->region_create();
+		ns->region_set_map(rid, _nav_map_rid);
+		ns->region_set_navigation_layers(rid, navigation_layers);
+		ns->region_set_enabled(rid, true);
+	}
+	ns->region_set_transform(rid, _chunk_to_world(chunk_pos));
+	ns->region_set_navigation_mesh(rid, nav_mesh);
 }
 
 // --- Main thread: cleanup ---

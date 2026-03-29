@@ -625,6 +625,13 @@ void VoxelTerrain::_recompute_nav_config() {
 	_nav_mesh_manager->filter_low_hanging = _nav_filter_low_hanging;
 	_nav_mesh_manager->filter_ledge_spans = _nav_filter_ledge_spans;
 	_nav_mesh_manager->filter_low_height_spans = _nav_filter_low_height;
+
+	// Sync navigation map cell size/height so edge stitching works correctly
+	if (_nav_mesh_manager->_nav_map_rid.is_valid()) {
+		NavigationServer3D *ns = NavigationServer3D::get_singleton();
+		ns->map_set_cell_size(_nav_mesh_manager->_nav_map_rid, cfg.cs);
+		ns->map_set_cell_height(_nav_mesh_manager->_nav_map_rid, cfg.ch);
+	}
 }
 
 #endif // VOXEL_ENABLE_NAVIGATION
