@@ -1248,6 +1248,11 @@ void VoxelTerrain::_notification(int p_what) {
 		case NOTIFICATION_ENTER_WORLD: {
 			World3D *world = *get_world_3d();
 			_mesh_map.for_each_block(SetWorldAction(world));
+#ifdef VOXEL_ENABLE_NAVIGATION
+			if (_nav_mesh_manager && !_nav_mesh_manager->_nav_map_rid.is_valid()) {
+				_nav_mesh_manager->_nav_map_rid = get_world_3d()->get_navigation_map();
+			}
+#endif
 #ifdef TOOLS_ENABLED
 			if (debug_is_draw_enabled()) {
 				_debug_renderer.set_world(is_visible_in_tree() ? world : nullptr);

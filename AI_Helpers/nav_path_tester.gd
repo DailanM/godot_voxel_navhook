@@ -61,23 +61,9 @@ func _draw_path(path: PackedVector3Array) -> void:
 	_immediate_mesh.clear_surfaces()
 	if path.size() < 2:
 		return
-	# Draw as triangle strip facing camera for visibility
-	var cam = get_viewport().get_camera_3d()
-	if not cam:
-		return
-	_immediate_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP, _material)
-	var hw = path_width * 0.5
+	_immediate_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP, _material)
 	for i in path.size():
 		var p = path[i]
-		# Offset slightly above surface
 		p.y += 0.05
-		var forward: Vector3
-		if i < path.size() - 1:
-			forward = (path[i + 1] - path[i]).normalized()
-		else:
-			forward = (path[i] - path[i - 1]).normalized()
-		var to_cam = (cam.global_position - p).normalized()
-		var right = forward.cross(to_cam).normalized() * hw
-		_immediate_mesh.surface_add_vertex(p - right)
-		_immediate_mesh.surface_add_vertex(p + right)
+		_immediate_mesh.surface_add_vertex(p)
 	_immediate_mesh.surface_end()
