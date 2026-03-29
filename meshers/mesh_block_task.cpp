@@ -611,9 +611,17 @@ void MeshBlockTask::build_mesh() {
 					nav_data.positions[i] = Vector3f(v.x + offset.x, v.y + offset.y, v.z + offset.z);
 				}
 
-				nav_data.indices.assign(
-						mesh_arrays.indices.begin(),
-						mesh_arrays.indices.begin() + idx_end);
+				// Reverse triangle winding order for Recast.
+				// Godot uses clockwise front-faces, but Recast expects counter-clockwise
+				// winding for upward-facing normals. Without this swap, rcMarkWalkableTriangles
+				// computes normals pointing downward and the navmesh is generated on the
+				// underside of the terrain.
+				nav_data.indices.resize(idx_end);
+				for (int i = 0; i < idx_end; i += 3) {
+					nav_data.indices[i] = mesh_arrays.indices[i];
+					nav_data.indices[i + 1] = mesh_arrays.indices[i + 2];
+					nav_data.indices[i + 2] = mesh_arrays.indices[i + 1];
+				}
 
 				meshing_dependency->nav_mesh_manager->on_mesh_built(std::move(nav_data));
 			}

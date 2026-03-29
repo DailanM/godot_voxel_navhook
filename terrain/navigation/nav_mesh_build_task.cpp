@@ -245,11 +245,11 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 			const unsigned char *t = &dmesh->tris[(btris + j) * 4];
 			PackedInt32Array polygon;
 			polygon.resize(3);
-			// Reversed winding: [0, 2, 1] not [0, 1, 2]
-			// Matches Godot's nav_mesh_generator_3d.cpp convention
+			// Input triangles were already wound for Recast (CCW), so Recast output
+			// is in the correct orientation. No additional winding reversal needed.
 			polygon.write[0] = deduped_index[bverts + t[0]];
-			polygon.write[1] = deduped_index[bverts + t[2]]; // swapped
-			polygon.write[2] = deduped_index[bverts + t[1]]; // swapped
+			polygon.write[1] = deduped_index[bverts + t[1]];
+			polygon.write[2] = deduped_index[bverts + t[2]];
 			result_nav_mesh->add_polygon(polygon);
 		}
 	}
