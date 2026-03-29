@@ -214,7 +214,7 @@ Ensures border geometry is available before building. See [plan reference — Bo
   - Return true only if all neighbors have cached data
 - [x] Implement `_is_within_nav_range(Vector3i chunk_pos)`:
   - Compute chunk world center from `chunk_pos * mesh_block_size + mesh_block_size / 2`
-  - Check against all registered navigation viewers: return true if the chunk is within `nav_distance` of **any** `VoxelNavViewer`
+  - Check against all registered navigation viewers: return true if the chunk is within `nav_distance` of **any** viewer with navigation enabled
   - Read the nav viewer registry under its mutex (viewers update on main thread, this runs on worker threads)
 
 ### 3.2 Dispatch logic in on_mesh_built()
@@ -256,6 +256,106 @@ Checks readiness and dispatches build tasks when a chunk and its neighbors are c
 - [x] Verify terrain edits trigger re-dispatch for the edited chunk
 - [x] Verify no duplicate dispatches for the same chunk in steady state
 - [x] Verify no crashes under concurrent meshing (multiple worker threads calling `on_mesh_built()`)
+
+---
+
+## Phase 3.5: Merge VoxelNavViewer into VoxelViewer
+
+**Goal:** Consolidate navigation viewer functionality into `VoxelViewer` as a `requires_navigation` checkbox, matching the existing `requires_visuals` / `requires_collisions` pattern. Remove the standalone `VoxelNavViewer` node. The `VoxelEngine` nav viewer registry (`NavViewer`, `NavViewerID`, `add_nav_viewer()`, etc.) is unchanged — only the node that drives it changes.
+
+### 3.5.1 Add navigation fields to VoxelViewer header
+
+- [x] In `terrain/voxel_viewer.h`, add (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`):
+  ```cpp
+  NavViewerID _nav_viewer_id;
+  bool _requires_navigation = false;
+  unsigned int _nav_distance = 64;
+  bool _pending_nav_deferred_unregistration = false;
+  ```
+- [x] Add method declarations:
+  ```cpp
+  void set_requires_navigation(bool enabled);
+  bool is_requiring_navigation() const;
+  void set_nav_distance(unsigned int distance);
+  unsigned int get_nav_distance() const;
+  ```
+- [x] Add private helper declarations:
+  ```cpp
+  static void nav_unregister_deferred_callback(const int64_t viewer_node_id, const Vector2i encoded_viewer_id);
+  bool is_nav_active() const;   // is_active() && _requires_navigation
+  ```
+- [x] Add include for `"../engine/ids.h"` (already present) — ensure `NavViewerID` is available (gated header)
+
+### 3.5.2 Implement navigation property methods
+
+- [x] In `terrain/voxel_viewer.cpp`, implement (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`):
+  - `set_requires_navigation(bool)`: stores the value. If toggling on while `is_active()`, call `VoxelEngine::get_singleton().add_nav_viewer()` and sync nav parameters. If toggling off while nav viewer is registered, call `remove_nav_viewer()`.
+  - `is_requiring_navigation()`: returns `_requires_navigation`
+  - `set_nav_distance(unsigned int)`: stores the value. If `is_nav_active()`, call `VoxelEngine::get_singleton().set_nav_viewer_distance(_nav_viewer_id, distance)`.
+  - `get_nav_distance()`: returns `_nav_distance`
+  - `is_nav_active()`: returns `is_active() && _requires_navigation`
+
+### 3.5.3 Wire nav viewer lifecycle into existing notifications
+
+- [x] In `NOTIFICATION_ENTER_TREE`: after the existing viewer registration block, add a nav registration block (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`):
+  - If `_requires_navigation`:
+    - If `!_pending_nav_deferred_unregistration`: call `add_nav_viewer()` to get `_nav_viewer_id`
+    - Else: assert the nav viewer still exists (was reparented)
+    - Sync nav viewer position and distance
+- [x] In `NOTIFICATION_EXIT_TREE`: after the existing viewer deferred-unregistration block, add a nav deferred-unregistration block (gated):
+  - If `_requires_navigation && !_pending_nav_deferred_unregistration`:
+    - Set `_pending_nav_deferred_unregistration = true`
+    - Schedule `callable_mp_static(&VoxelViewer::nav_unregister_deferred_callback)` with `get_instance_id()` and encoded `_nav_viewer_id`
+- [x] In `NOTIFICATION_TRANSFORM_CHANGED`: after the existing position update, add (gated):
+  - If `is_nav_active()`: call `VoxelEngine::get_singleton().set_nav_viewer_position(_nav_viewer_id, pos)`
+
+### 3.5.4 Implement nav deferred unregistration callback
+
+- [x] Implement `VoxelViewer::nav_unregister_deferred_callback(int64_t, Vector2i)`:
+  - Same pattern as the existing `VoxelViewer::unregister_deferred_callback()`:
+    - Look up the VoxelViewer via `ObjectDB::get_instance()`
+    - If found: clear `_pending_nav_deferred_unregistration`, check `is_inside_tree()` — if still in tree, return (was reparented)
+    - Decode `NavViewerID` from the `Vector2i`
+    - Assert nav viewer exists, then call `VoxelEngine::get_singleton().remove_nav_viewer()`
+  - This is a **second, separate static callback** — minimal change from the existing viewer pattern. Each ID type gets its own deferred callback, both using the same `_pending_*` + `is_inside_tree()` guard pattern.
+
+### 3.5.5 Wire set_enabled_in_editor for nav viewer
+
+- [x] In `set_enabled_in_editor()`: inside the `#ifdef TOOLS_ENABLED` block, after the existing viewer enable/disable logic, add a nav viewer block (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`):
+  - If enabling and `_requires_navigation` and `is_inside_tree()`: register nav viewer, sync params
+  - If disabling and nav viewer was registered: remove nav viewer
+
+### 3.5.6 Bind new properties
+
+- [x] In `_bind_methods()`, add (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`):
+  ```cpp
+  ClassDB::bind_method(D_METHOD("set_requires_navigation", "enabled"), &VoxelViewer::set_requires_navigation);
+  ClassDB::bind_method(D_METHOD("is_requiring_navigation"), &VoxelViewer::is_requiring_navigation);
+  ClassDB::bind_method(D_METHOD("set_nav_distance", "distance"), &VoxelViewer::set_nav_distance);
+  ClassDB::bind_method(D_METHOD("get_nav_distance"), &VoxelViewer::get_nav_distance);
+
+  ADD_PROPERTY(PropertyInfo(Variant::BOOL, "requires_navigation"), "set_requires_navigation", "is_requiring_navigation");
+  ADD_PROPERTY(PropertyInfo(Variant::INT, "nav_distance"), "set_nav_distance", "get_nav_distance");
+  ```
+
+### 3.5.7 Remove VoxelNavViewer
+
+- [x] Delete `terrain/navigation/voxel_nav_viewer.h` and `terrain/navigation/voxel_nav_viewer.cpp`
+- [x] Remove `ClassDB::register_class<VoxelNavViewer>()` from `register_types.cpp`
+- [x] Remove the `#include` for `voxel_nav_viewer.h` from `register_types.cpp`
+- [x] Verify no other files reference `VoxelNavViewer`
+
+### 3.5.8 Verification
+
+- [x] Build compiles with `scons`
+- [ ] Open editor, select a `VoxelViewer` node:
+  - `requires_navigation` checkbox appears (under existing properties)
+  - `nav_distance` property appears when `requires_navigation` is checked (or always visible)
+- [ ] Enabling `requires_navigation` registers a nav viewer in `VoxelEngine` (verify with debug logging or breakpoint)
+- [ ] Moving the VoxelViewer updates both viewer and nav viewer positions
+- [ ] Disabling `requires_navigation` unregisters the nav viewer
+- [ ] Reparenting the VoxelViewer node does not cause double-registration or lost nav viewer IDs
+- [ ] Removing the VoxelViewer from the tree properly unregisters both viewers via deferred callbacks
 
 ---
 

@@ -59,6 +59,46 @@ bool VoxelViewer::is_requiring_collisions() const {
 	return _requires_collisions;
 }
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+
+void VoxelViewer::set_requires_navigation(bool enabled) {
+	if (_requires_navigation == enabled) {
+		return;
+	}
+	_requires_navigation = enabled;
+	if (is_active()) {
+		if (enabled) {
+			_nav_viewer_id = VoxelEngine::get_singleton().add_nav_viewer();
+			VoxelEngine &ve = VoxelEngine::get_singleton();
+			ve.set_nav_viewer_position(_nav_viewer_id, get_global_transform().origin);
+			ve.set_nav_viewer_distance(_nav_viewer_id, _nav_distance);
+		} else {
+			VoxelEngine::get_singleton().remove_nav_viewer(_nav_viewer_id);
+		}
+	}
+}
+
+bool VoxelViewer::is_requiring_navigation() const {
+	return _requires_navigation;
+}
+
+void VoxelViewer::set_nav_distance(unsigned int distance) {
+	_nav_distance = distance;
+	if (is_nav_active()) {
+		VoxelEngine::get_singleton().set_nav_viewer_distance(_nav_viewer_id, distance);
+	}
+}
+
+unsigned int VoxelViewer::get_nav_distance() const {
+	return _nav_distance;
+}
+
+bool VoxelViewer::is_nav_active() const {
+	return is_active() && _requires_navigation;
+}
+
+#endif // VOXEL_ENABLE_NAVIGATION
+
 void VoxelViewer::set_requires_data_block_notifications(bool enabled) {
 	_requires_data_block_notifications = enabled;
 	if (is_active()) {
@@ -99,8 +139,22 @@ void VoxelViewer::set_enabled_in_editor(bool enable) {
 				_viewer_id = VoxelEngine::get_singleton().add_viewer();
 				sync_all_parameters();
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+				if (_requires_navigation) {
+					_nav_viewer_id = VoxelEngine::get_singleton().add_nav_viewer();
+					VoxelEngine &ve = VoxelEngine::get_singleton();
+					ve.set_nav_viewer_position(_nav_viewer_id, get_global_transform().origin);
+					ve.set_nav_viewer_distance(_nav_viewer_id, _nav_distance);
+				}
+#endif
 			} else {
 				VoxelEngine::get_singleton().remove_viewer(_viewer_id);
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+				if (_requires_navigation) {
+					VoxelEngine::get_singleton().remove_nav_viewer(_nav_viewer_id);
+				}
+#endif
 			}
 		}
 	}
@@ -146,26 +200,40 @@ void VoxelViewer::_notification(int p_what) {
 				}
 				sync_all_parameters();
 				// VoxelEngine::get_singleton().sync_viewers_task_priority_data();
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+				if (_requires_navigation) {
+					if (!_pending_nav_deferred_unregistration) {
+						_nav_viewer_id = VoxelEngine::get_singleton().add_nav_viewer();
+					} else {
+						ZN_ASSERT_RETURN(VoxelEngine::get_singleton().nav_viewer_exists(_nav_viewer_id));
+					}
+					VoxelEngine &ve = VoxelEngine::get_singleton();
+					ve.set_nav_viewer_position(_nav_viewer_id, get_global_transform().origin);
+					ve.set_nav_viewer_distance(_nav_viewer_id, _nav_distance);
+				}
+#endif
 			}
 		} break;
 
 		case NOTIFICATION_EXIT_TREE:
 			if (!Engine::get_singleton()->is_editor_hint() || _enabled_in_editor) {
 				if (!_pending_deferred_unregistration) {
-					// When users reparent nodes, Godot triggers an EXIT_TREE, followed by a separate ENTER_TREE. So
-					// reparenting viewers is indistinguishable from solely adding, or removing a node. If we unregister
-					// right now, it leads to unexpected issues with terrain pairing, like the whole area reloading
-					// because the viewer got unregistered and re-registered. Since reparenting usually takes place with
-					// `remove_child` immediately followed by `add_child`, we can workaround the issue by deferring
-					// unregistration. Unfortunately, we then have to workaround the case the node gets deleted
-					// (`remove_child` followed by `free`, or `queue_free`), otherwise the deferred call could end
-					// badly.
 					_pending_deferred_unregistration = true;
 					callable_mp_static(&VoxelViewer::unregister_deferred_callback)
 							.bind(get_instance_id(), Vector2i(_viewer_id.index, _viewer_id.version.value))
 							.call_deferred();
-					// VoxelEngine::get_singleton().remove_viewer(_viewer_id);
 				}
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+				if (_requires_navigation && !_pending_nav_deferred_unregistration) {
+					_pending_nav_deferred_unregistration = true;
+					callable_mp_static(&VoxelViewer::nav_unregister_deferred_callback)
+							.bind(get_instance_id(),
+									Vector2i(_nav_viewer_id.index, _nav_viewer_id.version.value))
+							.call_deferred();
+				}
+#endif
 			}
 			break;
 
@@ -173,6 +241,11 @@ void VoxelViewer::_notification(int p_what) {
 			if (is_active()) {
 				const Vector3 pos = get_global_transform().origin;
 				VoxelEngine::get_singleton().set_viewer_position(_viewer_id, pos);
+#ifdef VOXEL_ENABLE_NAVIGATION
+				if (_requires_navigation) {
+					VoxelEngine::get_singleton().set_nav_viewer_position(_nav_viewer_id, pos);
+				}
+#endif
 			}
 			break;
 
@@ -202,6 +275,28 @@ void VoxelViewer::unregister_deferred_callback(const int64_t viewer_node_id, con
 	ZN_ASSERT_RETURN(VoxelEngine::get_singleton().viewer_exists(viewer_id));
 	VoxelEngine::get_singleton().remove_viewer(viewer_id);
 }
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+
+void VoxelViewer::nav_unregister_deferred_callback(const int64_t viewer_node_id, const Vector2i encoded_viewer_id) {
+	Object *obj = ObjectDB::get_instance(ObjectID(viewer_node_id));
+	VoxelViewer *viewer = Object::cast_to<VoxelViewer>(obj);
+	if (viewer != nullptr) {
+		viewer->_pending_nav_deferred_unregistration = false;
+		if (viewer->is_inside_tree()) {
+			// Still in tree — was reparented, don't unregister
+			return;
+		}
+	}
+	// The node got removed and not added back, or was destroyed
+	NavViewerID viewer_id;
+	viewer_id.index = encoded_viewer_id.x;
+	viewer_id.version.value = encoded_viewer_id.y;
+	ZN_ASSERT_RETURN(VoxelEngine::get_singleton().nav_viewer_exists(viewer_id));
+	VoxelEngine::get_singleton().remove_nav_viewer(viewer_id);
+}
+
+#endif // VOXEL_ENABLE_NAVIGATION
 
 bool VoxelViewer::is_active() const {
 	return is_inside_tree() && (!Engine::get_singleton()->is_editor_hint() || _enabled_in_editor);
@@ -252,6 +347,18 @@ void VoxelViewer::_bind_methods() {
 			"is_requiring_data_block_notifications"
 	);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enabled_in_editor"), "set_enabled_in_editor", "is_enabled_in_editor");
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+	ClassDB::bind_method(D_METHOD("set_requires_navigation", "enabled"), &VoxelViewer::set_requires_navigation);
+	ClassDB::bind_method(D_METHOD("is_requiring_navigation"), &VoxelViewer::is_requiring_navigation);
+	ClassDB::bind_method(D_METHOD("set_nav_distance", "distance"), &VoxelViewer::set_nav_distance);
+	ClassDB::bind_method(D_METHOD("get_nav_distance"), &VoxelViewer::get_nav_distance);
+
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "requires_navigation"), "set_requires_navigation", "is_requiring_navigation"
+	);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "nav_distance"), "set_nav_distance", "get_nav_distance");
+#endif
 }
 
 } // namespace zylann::voxel

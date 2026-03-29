@@ -43,9 +43,6 @@
 #include "terrain/voxel_mesh_block.h"
 #include "terrain/voxel_save_completion_tracker.h"
 #include "terrain/voxel_viewer.h"
-#ifdef VOXEL_ENABLE_NAVIGATION
-#include "terrain/navigation/voxel_nav_viewer.h"
-#endif
 #include "util/godot/check_ref_ownership.h"
 #include "util/macros.h"
 #include "util/noise/fast_noise_lite/fast_noise_lite.h"
@@ -290,9 +287,6 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<VoxelTerrain>();
 		ClassDB::register_class<VoxelLodTerrain>();
 		ClassDB::register_class<VoxelViewer>();
-#ifdef VOXEL_ENABLE_NAVIGATION
-		ClassDB::register_class<VoxelNavViewer>();
-#endif
 
 		// Streams
 		ClassDB::register_abstract_class<VoxelStream>();

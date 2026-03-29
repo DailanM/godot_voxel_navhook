@@ -30,6 +30,14 @@ public:
 	void set_requires_collisions(bool enabled);
 	bool is_requiring_collisions() const;
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+	void set_requires_navigation(bool enabled);
+	bool is_requiring_navigation() const;
+
+	void set_nav_distance(unsigned int distance);
+	unsigned int get_nav_distance() const;
+#endif
+
 	void set_requires_data_block_notifications(bool enabled);
 	bool is_requiring_data_block_notifications() const;
 
@@ -51,6 +59,11 @@ private:
 	// static void unregister_deferred_callback(const ObjectID viewer_node_id, const Vector2i encoded_viewer_id);
 	static void unregister_deferred_callback(const int64_t viewer_node_id, const Vector2i encoded_viewer_id);
 
+#ifdef VOXEL_ENABLE_NAVIGATION
+	static void nav_unregister_deferred_callback(const int64_t viewer_node_id, const Vector2i encoded_viewer_id);
+	bool is_nav_active() const;
+#endif
+
 	bool is_active() const;
 
 	ViewerID _viewer_id;
@@ -62,6 +75,13 @@ private:
 	bool _enabled_in_editor = false;
 	bool _pending_deferred_unregistration = false;
 	int _network_peer_id = -1;
+
+#ifdef VOXEL_ENABLE_NAVIGATION
+	NavViewerID _nav_viewer_id;
+	bool _requires_navigation = false;
+	unsigned int _nav_distance = 64;
+	bool _pending_nav_deferred_unregistration = false;
+#endif
 };
 
 } // namespace zylann::voxel

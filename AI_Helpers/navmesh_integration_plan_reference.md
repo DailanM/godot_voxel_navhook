@@ -27,7 +27,7 @@ This works because `NavigationAgent3D` queries the server directly via `query_pa
 
 Properties are flat on the terrain node (`VoxelTerrain`), organized into inspector groups via `ADD_GROUP`. This matches the existing pattern for collision settings (`generate_collisions`, `collision_layer`, `collision_mask`, `collision_margin`).
 
-Navigation range is NOT a terrain property — it is controlled by `VoxelNavViewer` nodes (see [Navigation Viewer](#navigation-viewer) below).
+Navigation range is NOT a terrain property — it is controlled by `VoxelViewer` nodes with `requires_navigation` enabled (see [Navigation Viewer](#navigation-viewer) below).
 
 ```
 ADD_GROUP("Navigation", "")
@@ -110,14 +110,14 @@ The minimal setup for a developer:
 
 1. **Enable navigation** on the terrain node: set `generate_navigation = true`.
 2. **Set agent parameters**: `nav_agent_radius`, `nav_agent_height`, `nav_agent_max_climb`, `nav_agent_max_slope`.
-3. **Add a `VoxelNavViewer`** to the character (or any node near where navigation is needed). This controls where navmesh is generated.
+3. **Enable `requires_navigation`** on the `VoxelViewer` attached to the character. This controls where navmesh is generated.
 4. **Add a `NavigationAgent3D`** to the character (standard Godot workflow).
 5. Pathfinding works automatically — the terrain's internal regions are on the World3D's default navigation map, same map the agent queries.
 
 Optional:
 - Tune advanced Recast parameters if default quality isn't sufficient.
 - Call `add_nav_obstacle()` for dynamic obstacles (trees, buildings, etc.).
-- Adjust `VoxelNavViewer::nav_distance` to control how far around each viewer navmesh is generated.
+- Adjust `VoxelViewer::nav_distance` to control how far around each viewer navmesh is generated.
 
 ```
 Developer                    Terrain Node              NavMeshManager         NavigationServer3D
@@ -148,32 +148,41 @@ add_nav_obstacle(mesh, xform)
 
 ### Navigation Viewer
 
-Navigation range is controlled by a dedicated `VoxelNavViewer` node rather than a flat property on the terrain. This follows the `VoxelViewer` pattern (`terrain/voxel_viewer.h`) — developers place a `VoxelNavViewer` on any agent that needs navigation, and navmesh is generated within that viewer's range.
+Navigation range is controlled by a `requires_navigation` checkbox on the existing `VoxelViewer` node, alongside `requires_visuals` and `requires_collisions`. When enabled, the viewer also registers a nav viewer in `VoxelEngine`'s global nav viewer registry, and navmesh is generated within that viewer's `nav_distance`.
 
-**Rationale:** A developer may want navigation around specific agents without the cost of generating navmesh everywhere the terrain is visible. Placing a `VoxelNavViewer` on an agent is a lightweight way to request navigation — it's distinct from `VoxelViewer` (which controls mesh generation) because you don't want the performance penalty of actually meshing around every agent that needs pathfinding.
+**Rationale:** A developer may want navigation around specific agents without the cost of generating navmesh everywhere the terrain is visible. Enabling `requires_navigation` on a `VoxelViewer` is a lightweight way to request navigation — it reuses the same node and lifecycle already used for mesh/collision loading.
 
-**Properties:**
+**Additional properties on VoxelViewer** (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`):
 ```
-VoxelNavViewer (inherits Node3D)
-  nav_distance       : unsigned int  // Default 64; radius in world units
-  enabled_in_editor  : bool          // Default false
+requires_navigation : bool          // Default false; master toggle for nav viewer registration
+nav_distance        : unsigned int  // Default 64; radius in world units (independent of view_distance)
 ```
 
-**Lifecycle** (mirrors `VoxelViewer` — see `terrain/voxel_viewer.cpp`):
-- `NOTIFICATION_ENTER_TREE`: registers with `NavMeshManager`'s nav viewer registry via `NavMeshManager::add_nav_viewer()`. Skips registration if in editor and `!_enabled_in_editor`. If `_pending_deferred_unregistration` is set (node was reparented), reuses the existing ID instead of allocating a new one, and calls `sync_all_parameters()`.
-- `NOTIFICATION_EXIT_TREE`: **deferred** unregistration — sets `_pending_deferred_unregistration = true` and schedules a `call_deferred` callback. The callback checks `is_inside_tree()` before actually removing the viewer. This prevents unnecessary navmesh churn when a node is reparented (EXIT_TREE → ENTER_TREE), exactly matching `VoxelViewer::unregister_deferred_callback()`.
-- `NOTIFICATION_TRANSFORM_CHANGED`: updates position in registry via `NavMeshManager::update_nav_viewer_position(_viewer_id, get_global_transform().origin)`
+**Additional internal fields** (gated on `#ifdef VOXEL_ENABLE_NAVIGATION`):
+```cpp
+NavViewerID _nav_viewer_id;
+bool _requires_navigation = false;
+unsigned int _nav_distance = 64;
+bool _pending_nav_deferred_unregistration = false;
+```
+
+**Lifecycle** (extends existing `VoxelViewer` notifications):
+- `NOTIFICATION_ENTER_TREE`: after the existing viewer registration, if `_requires_navigation`: register a nav viewer via `VoxelEngine::get_singleton().add_nav_viewer()`. If `_pending_nav_deferred_unregistration` is set (node was reparented), reuses the existing nav viewer ID. Syncs nav position and distance.
+- `NOTIFICATION_EXIT_TREE`: after the existing viewer deferred-unregistration, if `_requires_navigation && !_pending_nav_deferred_unregistration`: set `_pending_nav_deferred_unregistration = true` and schedule a **separate** `callable_mp_static(&VoxelViewer::nav_unregister_deferred_callback)`. This is a second deferred callback alongside the existing one — each ID type gets its own callback, both using the same `is_inside_tree()` guard pattern.
+- `NOTIFICATION_TRANSFORM_CHANGED`: after the existing position update, if nav is active: call `VoxelEngine::get_singleton().set_nav_viewer_position(_nav_viewer_id, pos)`.
+
+**Deferred unregistration:** Two separate static callbacks — `unregister_deferred_callback()` (existing, for `ViewerID`) and `nav_unregister_deferred_callback()` (new, for `NavViewerID`). Each encodes its respective ID as a `Vector2i` and follows the same pattern: look up the node via `ObjectDB`, check `is_inside_tree()`, unregister if the node is gone.
+
+**Runtime toggle:** `set_requires_navigation(bool)` can be called at runtime. If toggling on while the viewer is active, it registers a nav viewer immediately. If toggling off, it unregisters. This mirrors how `set_enabled_in_editor()` handles dynamic registration.
 
 **ID type:** `NavViewerID` — a `SlotMapKey<uint16_t, uint16_t>` matching the `ViewerID` pattern in `engine/ids.h`. Generational IDs prevent use-after-free when slots are reused.
 
-**How `VoxelNavViewer` finds the `NavMeshManager`:** Uses the same **global registry pattern** as `VoxelViewer`. `VoxelNavViewer` registers directly with the `NavMeshManager` singleton (or a registry on `VoxelEngine`). Terrain nodes discover nav viewers by iterating the registry — no scene tree traversal. If no `NavMeshManager` is active (no terrain with `generate_navigation = true`), registration is a no-op.
-
-**NavMeshManager integration:**
-- `NavMeshManager` maintains a `SlotMap<NavViewerState>` with each viewer's position and distance (matching `VoxelEngine`'s `SlotMap<Viewer>` pattern)
-- `add_nav_viewer()` / `remove_nav_viewer()` / `update_nav_viewer_position()` methods manage the registry
-- A `Mutex _viewer_mutex` protects the registry (viewers update on main thread, `_is_within_nav_range()` reads on worker threads)
+**VoxelEngine integration:**
+- `VoxelEngine` maintains a `SlotMap<NavViewer>` with each viewer's position and distance (matching the existing `SlotMap<Viewer>` pattern)
+- `add_nav_viewer()` / `remove_nav_viewer()` / `set_nav_viewer_position()` / `set_nav_viewer_distance()` methods manage the registry
+- `for_each_nav_viewer()` provides read access for `NavMeshManager::_is_within_nav_range()`
 - `_is_within_nav_range(chunk_pos)` iterates all registered nav viewers and returns true if the chunk's world center is within `nav_distance` of **any** viewer
-- When a `VoxelNavViewer` moves or its distance changes, the manager can dispatch builds for newly-in-range chunks and remove regions for chunks that left range
+- When a `VoxelViewer` with navigation enabled moves or its distance changes, the manager can dispatch builds for newly-in-range chunks and remove regions for chunks that left range
 
 ---
 
@@ -187,9 +196,9 @@ terrain/navigation/
   nav_mesh_manager.cpp
   nav_mesh_build_task.h    — NavMeshBuildTask (IThreadedTask, Recast pipeline)
   nav_mesh_build_task.cpp
-  voxel_nav_viewer.h       — VoxelNavViewer node (controls nav generation range)
-  voxel_nav_viewer.cpp
 ```
+
+Navigation viewer functionality lives on `VoxelViewer` (`terrain/voxel_viewer.h/.cpp`) via `requires_navigation` and `nav_distance` properties, not as a separate node.
 
 Add `"terrain/navigation/*.cpp"` to the source list in `common.py`, gated on a new build option `voxel_navigation`:
 
@@ -291,7 +300,7 @@ public:
     RID _nav_map_rid;
 
     // --- Navigation viewer registry ---
-    // VoxelNavViewer nodes register/unregister here (main thread).
+    // VoxelViewer nodes with requires_navigation register/unregister here (main thread).
     // _is_within_nav_range() reads this under _viewer_mutex (worker threads).
     // Uses SlotMap with generational IDs matching the VoxelViewer pattern.
     struct NavViewerState {
@@ -1115,6 +1124,6 @@ These items are noted for later consideration and are not part of the initial im
 
 **Cleanup on Terrain Node Removal:** When a `VoxelTerrain` node is destroyed, all nav regions must be freed in bulk. `NavMeshManager::clear_all()` handles this. See "Chunk Lifecycle Integration" section above.
 
-**Editor UI:** Debug visualization of nav regions (Godot already supports navmesh debug drawing). Property inspector for Recast parameters on the VoxelNavBuilder node. Gizmos showing nav range. Toggle to enable/disable nav building in-editor.
+**Editor UI:** Debug visualization of nav regions (Godot already supports navmesh debug drawing). Gizmos showing nav range. Toggle to enable/disable nav building in-editor.
 
 **Custom rcContext:** Default no-op `rcContext` is fine initially. Later, subclass to forward `doLog()` to Godot's print functions for profiling and debugging the Recast pipeline.
