@@ -589,15 +589,15 @@ void MeshBlockTask::build_mesh() {
 	if (meshing_dependency->nav_mesh_manager != nullptr && lod_index == 0) {
 		Ref<VoxelMesherTransvoxel> nav_transvoxel_mesher;
 		if (zylann::godot::try_get_as(mesher, nav_transvoxel_mesher)) {
+			NavChunkData nav_data;
+			nav_data.chunk_position = mesh_block_position;
+			nav_data.world_aabb = AABB(
+					to_vec3(mesh_block_position * mesh_block_size),
+					to_vec3(mesh_block_size));
+
 			const VoxelMesher::Output::CollisionSurface &col = _surfaces_output.collision_surface;
 
 			if (_surfaces_output.surfaces.size() > 0 && col.submesh_vertex_end > 0) {
-				NavChunkData nav_data;
-				nav_data.chunk_position = mesh_block_position;
-				nav_data.world_aabb = AABB(
-						to_vec3(mesh_block_position * mesh_block_size),
-						to_vec3(mesh_block_size));
-
 				const transvoxel::MeshArrays &mesh_arrays =
 						VoxelMesherTransvoxel::get_mesh_cache_from_current_thread();
 
@@ -622,9 +622,11 @@ void MeshBlockTask::build_mesh() {
 					nav_data.indices[i + 1] = mesh_arrays.indices[i + 2];
 					nav_data.indices[i + 2] = mesh_arrays.indices[i + 1];
 				}
-
-				meshing_dependency->nav_mesh_manager->on_mesh_built(std::move(nav_data));
 			}
+
+			// Always notify — empty chunks must enter the cache so neighbors'
+			// _are_neighbors_ready() checks can pass.
+			meshing_dependency->nav_mesh_manager->on_mesh_built(std::move(nav_data));
 		}
 	}
 #endif
