@@ -60,6 +60,7 @@ public:
 	bool filter_low_hanging = true;
 	bool filter_ledge_spans = true;
 	bool filter_low_height_spans = true;
+	bool register_with_server = true;
 
 	// Chunk geometry info
 	int mesh_block_size = 16;

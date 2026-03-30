@@ -146,6 +146,9 @@ public:
 	void remove_nav_obstacle(int obstacle_id);
 	void update_nav_obstacle_transform(int obstacle_id, Transform3D transform);
 
+	void set_nav_register_with_server(bool enabled);
+	bool get_nav_register_with_server() const;
+
 	Array debug_get_nav_meshes() const;
 
 private:
@@ -450,6 +453,7 @@ private:
 	float _nav_edge_max_error = 1.3f;
 	float _nav_detail_sample_dist = 1.2f;
 	float _nav_detail_sample_max_error = 0.1f;
+	bool _nav_register_with_server = true;
 	std::shared_ptr<NavMeshManager> _nav_mesh_manager;
 #endif
 

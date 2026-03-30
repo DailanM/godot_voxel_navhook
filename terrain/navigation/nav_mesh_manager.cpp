@@ -70,18 +70,20 @@ void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> na
 	}
 	_applied_generations[chunk_pos] = build_generation;
 
-	NavigationServer3D *ns = NavigationServer3D::get_singleton();
-
 	RegionEntry &region = _regions[chunk_pos];
-	if (!region.rid.is_valid()) {
-		region.rid = ns->region_create();
-		ns->region_set_map(region.rid, _nav_map_rid);
-		ns->region_set_navigation_layers(region.rid, navigation_layers);
-		ns->region_set_enabled(region.rid, true);
-	}
-	ns->region_set_transform(region.rid, _chunk_to_world(chunk_pos));
-	ns->region_set_navigation_mesh(region.rid, nav_mesh);
 	region.nav_mesh = nav_mesh;
+
+	if (register_with_server) {
+		NavigationServer3D *ns = NavigationServer3D::get_singleton();
+		if (!region.rid.is_valid()) {
+			region.rid = ns->region_create();
+			ns->region_set_map(region.rid, _nav_map_rid);
+			ns->region_set_navigation_layers(region.rid, navigation_layers);
+			ns->region_set_enabled(region.rid, true);
+		}
+		ns->region_set_transform(region.rid, _chunk_to_world(chunk_pos));
+		ns->region_set_navigation_mesh(region.rid, nav_mesh);
+	}
 }
 
 // --- Main thread: cleanup ---

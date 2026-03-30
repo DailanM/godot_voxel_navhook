@@ -594,6 +594,17 @@ float VoxelTerrain::get_nav_detail_sample_max_error() const {
 	return _nav_detail_sample_max_error;
 }
 
+void VoxelTerrain::set_nav_register_with_server(bool enabled) {
+	_nav_register_with_server = enabled;
+	if (_nav_mesh_manager) {
+		_nav_mesh_manager->register_with_server = enabled;
+	}
+}
+
+bool VoxelTerrain::get_nav_register_with_server() const {
+	return _nav_register_with_server;
+}
+
 int VoxelTerrain::add_nav_obstacle(Ref<Mesh> collision_mesh, Transform3D transform, bool walkable) {
 	// Stub — Phase 5
 	return 0;
@@ -649,6 +660,7 @@ void VoxelTerrain::_recompute_nav_config() {
 	_nav_mesh_manager->filter_low_hanging = _nav_filter_low_hanging;
 	_nav_mesh_manager->filter_ledge_spans = _nav_filter_ledge_spans;
 	_nav_mesh_manager->filter_low_height_spans = _nav_filter_low_height;
+	_nav_mesh_manager->register_with_server = _nav_register_with_server;
 
 	// Sync navigation map cell size/height so edge stitching works correctly
 	if (_nav_mesh_manager->_nav_map_rid.is_valid()) {
@@ -2933,6 +2945,8 @@ void VoxelTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_nav_detail_sample_dist"), &Self::get_nav_detail_sample_dist);
 	ClassDB::bind_method(D_METHOD("set_nav_detail_sample_max_error", "error"), &Self::set_nav_detail_sample_max_error);
 	ClassDB::bind_method(D_METHOD("get_nav_detail_sample_max_error"), &Self::get_nav_detail_sample_max_error);
+	ClassDB::bind_method(D_METHOD("set_nav_register_with_server", "enabled"), &Self::set_nav_register_with_server);
+	ClassDB::bind_method(D_METHOD("get_nav_register_with_server"), &Self::get_nav_register_with_server);
 
 	ClassDB::bind_method(
 			D_METHOD("add_nav_obstacle", "collision_mesh", "transform", "walkable"),
@@ -2997,6 +3011,12 @@ void VoxelTerrain::_bind_methods() {
 			PropertyInfo(Variant::FLOAT, "nav_detail_sample_max_error"),
 			"set_nav_detail_sample_max_error",
 			"get_nav_detail_sample_max_error");
+
+	ADD_GROUP("Navigation Debug", "nav_");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "nav_register_with_server"),
+			"set_nav_register_with_server",
+			"get_nav_register_with_server");
 #endif // VOXEL_ENABLE_NAVIGATION
 
 	ADD_GROUP("Materials", "");
