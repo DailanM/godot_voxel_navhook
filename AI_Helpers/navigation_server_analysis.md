@@ -47,15 +47,51 @@ Since we run Recast directly on worker threads:
 - **O(n^2) edge connections** — still unsolved upstream. Could disable `use_edge_connections` and ensure chunks overlap slightly so Recast handles connectivity internally
 - **Main thread sync cost** — largely fixed in Godot 4.3+ but open PR #112908 would help further
 
-## Potential Next Step: Detour for Pathfinding
+## Edge Merging Algorithm Deep Dive (from Godot source)
 
-The most complete solution would be to use **Detour** (Recast's companion pathfinding library) for queries directly, bypassing NavigationServer entirely. This would eliminate both the sync cost and edge connection scaling. This is essentially what Zylann was contemplating, and what one user in issue #187 successfully did (generating tiled navmesh from heightmap + passability mask with Recast/Detour directly).
+Source: `godot/modules/navigation_3d/3d/nav_map_builder_3d.cpp`
 
-This would involve:
-- Building Detour tiled navmeshes from our existing Recast output
-- Managing a `dtNavMesh` + `dtNavMeshQuery` instance in `NavMeshManager`
-- Exposing pathfinding queries (find_path, nearest_point, etc.) on VoxelTerrain
-- Tile add/remove as chunks stream in/out
+### Two-Phase Edge Matching
+
+When the navigation map rebuilds, external edges (boundary edges of each region) are matched in two phases:
+
+**Phase 1 — Quantized HashMap (O(E)):**
+Each edge vertex is quantized via `floor(pos / merge_cell)` into a 64-bit `PointKey` (21+22+21 bits for x/y/z). Two vertices form an `EdgeKey` (normalized so a.key <= b.key). All external edges are inserted into a `HashMap<EdgeKey, EdgeConnectionPair>`. If two edges from different regions hash to the same key, they're connected. Unmatched edges become "free edges".
+
+- Quantization cell: `merge_cell = cell_size * merge_rasterizer_cell_scale` (default scale: 0.1)
+- See `NavRegionBuilder3D::get_point_key()` in `nav_region_builder_3d.cpp:151`
+
+**Phase 2 — Brute-force margin matching (O(F²)):**
+All free edges are compared pairwise (`nav_map_builder_3d.cpp:214-269`). For each pair, edges are projected onto each other and checked against `edge_connection_margin` (default 0.1). This is the expensive path — F² comparisons where F = free edge count.
+
+### Rebuild Trigger Frequency
+
+`region_set_navigation_mesh()` is a deferred command (queued, not immediate). Commands flush once per physics frame in `GodotNavigationServer3D::process()`, then `NavMap3D::sync()` runs. Key flow:
+
+1. Multiple `region_set_navigation_mesh` calls queue up
+2. `process()` flushes all queued commands in one batch
+3. `sync()` → `_sync_dirty_map_update_requests()` sets `iteration_dirty = true`
+4. `_build_iteration()` runs **once** per frame (guarded by `iteration_dirty && !iteration_building && !iteration_ready`)
+5. With async iterations enabled, build runs on a worker thread; next build won't start until current one finishes
+
+**Effective cost:** O(frames_with_dirty_regions × E_total). If chunks arrive spread across N frames, you get N full rebuilds, each processing all edges from all regions. Multiple chunks arriving in the same frame batch into one rebuild.
+
+### Implications for Optimization
+
+- **Vertex welding** (snapping boundary vertices to match quantization buckets) would ensure edges match in Phase 1, eliminating Phase 2's O(F²). But Phase 1 still runs over all edges every rebuild.
+- **Mesh merging** (combining chunk meshes into fewer regions) reduces E_total and the number of regions that trigger rebuilds. But reproduces similar batched-rebuild complexity in our module.
+- **Buffering submissions** (waiting for multiple chunks before calling `region_set_navigation_mesh`) reduces the number of rebuilds but adds latency.
+- The navigation server already threads the rebuild (async iterations), so doing our own threaded merge doesn't necessarily gain anything — we'd just be moving the same O(E) work from their thread to ours.
+
+### Key NavigationServer Performance Counters
+
+Available via `NavigationServer3D.get_process_info()`:
+- `INFO_EDGE_COUNT` — total external edges (Phase 1 cost)
+- `INFO_EDGE_FREE_COUNT` — edges that failed quantization matching (Phase 2 cost)
+- `INFO_EDGE_CONNECTION_COUNT` — successfully connected edges
+- `INFO_EDGE_MERGE_COUNT` — edges merged within regions
+
+If `edge_free_count / edge_count` is high, Phase 2 dominates. If low, Phase 1 (linear scan) or sheer rebuild frequency is the bottleneck.
 
 ## Reference Links
 
