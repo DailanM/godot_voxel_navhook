@@ -99,9 +99,12 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		// Must run AFTER LowHangingWalkableObstacles (ordering matters per Recast.h)
 		rcFilterLedgeSpans(&recast_ctx, cfg.walkableHeight, cfg.walkableClimb, *hf);
 	}
-	if (filter_low_height_spans) {
-		rcFilterWalkableLowHeightSpans(&recast_ctx, cfg.walkableHeight, *hf);
-	}
+	// TEMP: disabled to test Y-seam hypothesis — the low-height filter
+	// creates false ceilings where two chunks' surface meshes overlap
+	// vertically in the Y-padding zone.
+	// if (filter_low_height_spans) {
+	// 	rcFilterWalkableLowHeightSpans(&recast_ctx, cfg.walkableHeight, *hf);
+	// }
 
 	// --- Step 5: Compact, erode, build regions ---
 
@@ -121,10 +124,12 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	rcFreeHeightField(hf);
 	hf = nullptr;
 
-	if (!rcErodeWalkableArea(&recast_ctx, cfg.walkableRadius, *chf)) {
-		rcFreeCompactHeightfield(chf);
-		ERR_FAIL_MSG("NavMeshBuild: Failed to erode walkable area");
-	}
+	// TEMP: disabled to test Y-seam hypothesis — erosion may be eating
+	// into walkable area at the Y boundary due to missing neighbor connectivity
+	// if (!rcErodeWalkableArea(&recast_ctx, cfg.walkableRadius, *chf)) {
+	// 	rcFreeCompactHeightfield(chf);
+	// 	ERR_FAIL_MSG("NavMeshBuild: Failed to erode walkable area");
+	// }
 
 	// --- Y-border exclusion (analog of XZ borderSize paintRectRegion) ---
 	//
