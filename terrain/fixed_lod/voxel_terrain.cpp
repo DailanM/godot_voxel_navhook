@@ -486,9 +486,18 @@ float VoxelTerrain::get_nav_cell_size() const {
 void VoxelTerrain::set_nav_cell_height(float cell_height) {
 	if (cell_height <= 0.0f) {
 		WARN_PRINT("nav_cell_height must be greater than 0");
+		return;
 	}
-	_nav_cell_height = cell_height;
+	const int block_size = get_mesh_block_size();
+	const float snapped = _snap_cell_size_to_block(cell_height, block_size);
+	if (!Math::is_equal_approx(snapped, cell_height)) {
+		WARN_PRINT(vformat("nav_cell_height %.4f does not evenly divide mesh_block_size %d. "
+						   "Snapped to %.4f for correct chunk boundary alignment.",
+				cell_height, block_size, snapped));
+	}
+	_nav_cell_height = snapped;
 	_recompute_nav_config();
+	notify_property_list_changed();
 }
 
 float VoxelTerrain::get_nav_cell_height() const {
