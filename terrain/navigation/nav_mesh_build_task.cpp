@@ -183,7 +183,8 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		ERR_FAIL_MSG("NavMeshBuild: Failed to allocate contour set");
 	}
 
-	if (!rcBuildContours(&recast_ctx, *chf, cfg.maxSimplificationError,
+	// TEMP: disable contour simplification to test Y-seam hypothesis
+	if (!rcBuildContours(&recast_ctx, *chf, 0.0f,
 				cfg.maxEdgeLen, *cset)) {
 		rcFreeCompactHeightfield(chf);
 		rcFreeContourSet(cset);
