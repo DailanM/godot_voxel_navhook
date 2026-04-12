@@ -27,10 +27,16 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	// Chunk world bounds from stored AABB
 	const AABB &chunk_aabb = chunk_triangles.world_aabb;
 
-	// Clip Y bounds to the chunk's own vertical extent with padding:
-	// - Below: walkableClimb so agents can step up across Y boundaries
-	// - Above: walkableHeight so ceiling geometry from the chunk above is visible
-	//   for correct clearance rejection
+	// Y bounds: chunk's own vertical extent, padded on both sides so that
+	// Y-neighbor geometry can be rasterized and participate in filters,
+	// compact build, and erosion the same way XZ borderSize geometry does.
+	// The Y analog of XZ borderSize — out-of-range spans get excluded later
+	// via rcMarkBoxArea after erode, so polys only form in this chunk's
+	// owned Y range.
+	// - pad_below = walkableClimb so step-up climb detection works at the
+	//   lower seam.
+	// - pad_above = walkableHeight so clearance rejection works at the
+	//   upper seam.
 	const float pad_below = cfg.walkableClimb * cfg.ch;
 	const float pad_above = cfg.walkableHeight * cfg.ch;
 
@@ -54,6 +60,12 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 
 	// --- Step 2: Rasterize terrain triangles ---
 
+	// All chunk + neighbor data is rasterized normally (as walkable where
+	// slope permits). Continuous terrain crossing chunk boundaries produces
+	// one merged solid span per column thanks to addSpan's overlap merging
+	// — so there's no fake "ceiling" that would trip up the low-height
+	// filter. Out-of-chunk-range polys are excluded later via rcMarkBoxArea
+	// on the compact heightfield (the Y analog of XZ borderSize).
 	auto rasterize = [&](const NavChunkData &data) {
 		if (data.indices.size() == 0) {
 			return;
@@ -112,6 +124,43 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	if (!rcErodeWalkableArea(&recast_ctx, cfg.walkableRadius, *chf)) {
 		rcFreeCompactHeightfield(chf);
 		ERR_FAIL_MSG("NavMeshBuild: Failed to erode walkable area");
+	}
+
+	// --- Y-border exclusion (analog of XZ borderSize paintRectRegion) ---
+	//
+	// Mark compact spans whose walkable floor lies outside this chunk's
+	// owned Y range [chunk.y, chunk.y + size.y) as RC_NULL_AREA, so that
+	// region/contour/polymesh build produces polys only for spans we own.
+	// Recast's XZ tile mechanism does the same thing for the borderSize
+	// ring via paintRectRegion inside rcBuildRegions*. We're applying it
+	// here for Y because Recast has no built-in Y tiling.
+	//
+	// Critically this runs AFTER erode — the pad spans are walkable through
+	// erosion so the chunk interior isn't shrunk at the Y seams, matching
+	// how XZ borderSize spans stay walkable during erosion.
+	{
+		// Below box: everything with Y cell < chunk floor cell.
+		// Using (chunk.y - 0.5*ch) as the upper bound gives miny=0,
+		// maxy = chunk_floor_cell - 1 under rcMarkBoxArea's truncating
+		// integer conversion.
+		const float below_min[3] = { cfg.bmin[0], cfg.bmin[1], cfg.bmin[2] };
+		const float below_max[3] = {
+			cfg.bmax[0],
+			float(chunk_aabb.position.y) - 0.5f * cfg.ch,
+			cfg.bmax[2]
+		};
+		rcMarkBoxArea(&recast_ctx, below_min, below_max, RC_NULL_AREA, *chf);
+
+		// Above box: everything with Y cell >= chunk ceil cell.
+		// Using chunk.y + size.y exactly gives miny = chunk_ceil_cell,
+		// maxy = top of heightfield.
+		const float above_min[3] = {
+			cfg.bmin[0],
+			float(chunk_aabb.position.y + chunk_aabb.size.y),
+			cfg.bmin[2]
+		};
+		const float above_max[3] = { cfg.bmax[0], cfg.bmax[1], cfg.bmax[2] };
+		rcMarkBoxArea(&recast_ctx, above_min, above_max, RC_NULL_AREA, *chf);
 	}
 
 	if (!rcBuildDistanceField(&recast_ctx, *chf)) {

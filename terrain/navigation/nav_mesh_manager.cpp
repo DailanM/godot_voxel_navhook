@@ -12,13 +12,19 @@
 
 namespace zylann::voxel {
 
-// 6 axis neighbors — start simple, expand to 26 if border overlap requires corners
-static const Vector3i neighbor_offsets[6] = {
+// 6 axis neighbors + 4 XZ diagonal neighbors. The XZ diagonals are needed so
+// that borderSize rasterization sees geometry in the corner cells — without
+// them, erosion eats into the walkable area at chunk corners. YZ/XY diagonals
+// are not yet included; they'd matter where a chunk's Y pad meets another
+// chunk's XZ border pad, which hasn't shown up as a visible issue.
+static const Vector3i neighbor_offsets[10] = {
 	Vector3i(-1, 0, 0), Vector3i(1, 0, 0),
 	Vector3i(0, -1, 0), Vector3i(0, 1, 0),
 	Vector3i(0, 0, -1), Vector3i(0, 0, 1),
+	Vector3i(-1, 0, -1), Vector3i(-1, 0, 1),
+	Vector3i(1, 0, -1), Vector3i(1, 0, 1),
 };
-static const int NEIGHBOR_COUNT = 6;
+static const int NEIGHBOR_COUNT = 10;
 
 // --- Worker thread ---
 
