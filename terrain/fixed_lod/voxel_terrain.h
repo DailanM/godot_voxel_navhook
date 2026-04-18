@@ -124,6 +124,12 @@ public:
 	void set_nav_filter_low_height(bool enabled);
 	bool get_nav_filter_low_height() const;
 
+	void set_nav_use_erosion(bool enabled);
+	bool get_nav_use_erosion() const;
+
+	void set_nav_use_detail_mesh(bool enabled);
+	bool get_nav_use_detail_mesh() const;
+
 	void set_nav_region_min_size(int size);
 	int get_nav_region_min_size() const;
 
@@ -447,6 +453,8 @@ private:
 	bool _nav_filter_low_hanging = true;
 	bool _nav_filter_ledge_spans = true;
 	bool _nav_filter_low_height = true;
+	bool _nav_use_erosion = true;
+	bool _nav_use_detail_mesh = true;
 	int _nav_region_min_size = 8;
 	int _nav_region_merge_size = 20;
 	float _nav_edge_max_length = 3.2f;

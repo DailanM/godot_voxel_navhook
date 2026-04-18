@@ -12,19 +12,29 @@
 
 namespace zylann::voxel {
 
-// 6 axis neighbors + 4 XZ diagonal neighbors. The XZ diagonals are needed so
-// that borderSize rasterization sees geometry in the corner cells — without
-// them, erosion eats into the walkable area at chunk corners. YZ/XY diagonals
-// are not yet included; they'd matter where a chunk's Y pad meets another
-// chunk's XZ border pad, which hasn't shown up as a visible issue.
-static const Vector3i neighbor_offsets[10] = {
+// All 26 neighbors in the 3x3x3 cube around the center chunk.
+// Required so that Y-padded heightfield bounds have geometry coverage
+// from all directions — without full coverage, erosion eats into the
+// walkable area at chunk edges/corners where geometry is missing.
+static const Vector3i neighbor_offsets[26] = {
+	// 6 face neighbors
 	Vector3i(-1, 0, 0), Vector3i(1, 0, 0),
 	Vector3i(0, -1, 0), Vector3i(0, 1, 0),
 	Vector3i(0, 0, -1), Vector3i(0, 0, 1),
+	// 12 edge neighbors
+	Vector3i(-1, -1, 0), Vector3i(-1, 1, 0),
+	Vector3i(1, -1, 0), Vector3i(1, 1, 0),
 	Vector3i(-1, 0, -1), Vector3i(-1, 0, 1),
 	Vector3i(1, 0, -1), Vector3i(1, 0, 1),
+	Vector3i(0, -1, -1), Vector3i(0, -1, 1),
+	Vector3i(0, 1, -1), Vector3i(0, 1, 1),
+	// 8 corner neighbors
+	Vector3i(-1, -1, -1), Vector3i(-1, -1, 1),
+	Vector3i(-1, 1, -1), Vector3i(-1, 1, 1),
+	Vector3i(1, -1, -1), Vector3i(1, -1, 1),
+	Vector3i(1, 1, -1), Vector3i(1, 1, 1),
 };
-static const int NEIGHBOR_COUNT = 10;
+static const int NEIGHBOR_COUNT = 26;
 
 // --- Worker thread ---
 
@@ -211,6 +221,8 @@ void NavMeshManager::_dispatch_nav_build(Vector3i chunk_pos, uint32_t generation
 	task->filter_low_hanging = filter_low_hanging;
 	task->filter_ledge_spans = filter_ledge_spans;
 	task->filter_low_height_spans = filter_low_height_spans;
+	task->use_erosion = use_erosion;
+	task->use_detail_mesh = use_detail_mesh;
 
 	// Copy this chunk's triangles
 	task->chunk_triangles = _chunk_cache[chunk_pos].data;

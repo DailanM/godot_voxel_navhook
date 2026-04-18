@@ -531,6 +531,24 @@ bool VoxelTerrain::get_nav_filter_low_height() const {
 	return _nav_filter_low_height;
 }
 
+void VoxelTerrain::set_nav_use_erosion(bool enabled) {
+	_nav_use_erosion = enabled;
+	_recompute_nav_config();
+}
+
+bool VoxelTerrain::get_nav_use_erosion() const {
+	return _nav_use_erosion;
+}
+
+void VoxelTerrain::set_nav_use_detail_mesh(bool enabled) {
+	_nav_use_detail_mesh = enabled;
+	_recompute_nav_config();
+}
+
+bool VoxelTerrain::get_nav_use_detail_mesh() const {
+	return _nav_use_detail_mesh;
+}
+
 void VoxelTerrain::set_nav_region_min_size(int size) {
 	if (size <= 0) {
 		WARN_PRINT("nav_region_min_size must be greater than 0");
@@ -669,6 +687,8 @@ void VoxelTerrain::_recompute_nav_config() {
 	_nav_mesh_manager->filter_low_hanging = _nav_filter_low_hanging;
 	_nav_mesh_manager->filter_ledge_spans = _nav_filter_ledge_spans;
 	_nav_mesh_manager->filter_low_height_spans = _nav_filter_low_height;
+	_nav_mesh_manager->use_erosion = _nav_use_erosion;
+	_nav_mesh_manager->use_detail_mesh = _nav_use_detail_mesh;
 	_nav_mesh_manager->register_with_server = _nav_register_with_server;
 
 	// Sync navigation map cell size/height so edge stitching works correctly
@@ -2942,6 +2962,10 @@ void VoxelTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_nav_filter_ledge_spans"), &Self::get_nav_filter_ledge_spans);
 	ClassDB::bind_method(D_METHOD("set_nav_filter_low_height", "enabled"), &Self::set_nav_filter_low_height);
 	ClassDB::bind_method(D_METHOD("get_nav_filter_low_height"), &Self::get_nav_filter_low_height);
+	ClassDB::bind_method(D_METHOD("set_nav_use_erosion", "enabled"), &Self::set_nav_use_erosion);
+	ClassDB::bind_method(D_METHOD("get_nav_use_erosion"), &Self::get_nav_use_erosion);
+	ClassDB::bind_method(D_METHOD("set_nav_use_detail_mesh", "enabled"), &Self::set_nav_use_detail_mesh);
+	ClassDB::bind_method(D_METHOD("get_nav_use_detail_mesh"), &Self::get_nav_use_detail_mesh);
 	ClassDB::bind_method(D_METHOD("set_nav_region_min_size", "size"), &Self::set_nav_region_min_size);
 	ClassDB::bind_method(D_METHOD("get_nav_region_min_size"), &Self::get_nav_region_min_size);
 	ClassDB::bind_method(D_METHOD("set_nav_region_merge_size", "size"), &Self::set_nav_region_merge_size);
@@ -3000,6 +3024,14 @@ void VoxelTerrain::_bind_methods() {
 			PropertyInfo(Variant::BOOL, "nav_filter_low_height"),
 			"set_nav_filter_low_height",
 			"get_nav_filter_low_height");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "nav_use_erosion"),
+			"set_nav_use_erosion",
+			"get_nav_use_erosion");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "nav_use_detail_mesh"),
+			"set_nav_use_detail_mesh",
+			"get_nav_use_detail_mesh");
 	ADD_PROPERTY(
 			PropertyInfo(Variant::INT, "nav_region_min_size"), "set_nav_region_min_size", "get_nav_region_min_size");
 	ADD_PROPERTY(

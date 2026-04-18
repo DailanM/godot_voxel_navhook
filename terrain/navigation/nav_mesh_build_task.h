@@ -27,6 +27,8 @@ public:
 	bool filter_low_hanging = true;
 	bool filter_ledge_spans = true;
 	bool filter_low_height_spans = true;
+	bool use_erosion = true;
+	bool use_detail_mesh = true;
 
 	// Output
 	Ref<NavigationMesh> result_nav_mesh;

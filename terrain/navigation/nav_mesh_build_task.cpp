@@ -21,24 +21,36 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 
 	// --- Step 1: Setup heightfield bounds ---
 
+	ERR_FAIL_COND_MSG(cfg.borderSize <= cfg.walkableRadius,
+			"NavMeshBuild: borderSize must be greater than walkableRadius for proper tile stitching");
+
 	const int border = cfg.borderSize;
 	const float cs = cfg.cs;
 
 	// Chunk world bounds from stored AABB
 	const AABB &chunk_aabb = chunk_triangles.world_aabb;
 
-	// Y bounds: chunk's own vertical extent, padded on both sides so that
-	// Y-neighbor geometry can be rasterized and participate in filters,
-	// compact build, and erosion the same way XZ borderSize geometry does.
-	// The Y analog of XZ borderSize — out-of-range spans get excluded later
-	// via rcMarkBoxArea after erode, so polys only form in this chunk's
-	// owned Y range.
-	// - pad_below = walkableClimb so step-up climb detection works at the
-	//   lower seam.
-	// - pad_above = walkableHeight so clearance rejection works at the
-	//   upper seam.
-	const float pad_below = cfg.walkableClimb * cfg.ch;
-	const float pad_above = cfg.walkableHeight * cfg.ch;
+	// Y bounds: chunk's own vertical extent, padded so that Y-neighbor
+	// geometry participates in filtering and erosion correctly.
+	//
+	// Worst-case slope: terrain can rise/fall walkableClimb voxels per XZ
+	// cell.  Over walkableRadius cells (the erosion distance), that is
+	// walkableRadius * walkableClimb voxels.  If the heightfield doesn't
+	// capture that geometry, rasterization clips it, creating artificial
+	// disconnected XZ edges that erosion treats as walls — shrinking the
+	// walkable interior at Y seams.
+	//
+	// pad_below  = walkableRadius * walkableClimb * ch
+	//   Covers worst-case downward slope over the erosion radius.
+	//   Also subsumes the plain walkableClimb needed for step-up
+	//   detection in rcFilterLedgeSpans (since walkableRadius >= 1).
+	//
+	// pad_above  = (walkableRadius * walkableClimb + walkableHeight) * ch
+	//   Same erosion term, plus walkableHeight so rcFilterLedgeSpans can
+	//   check clearance at the upper seam when stepping up into the next
+	//   Y-chunk.
+	const float pad_below = cfg.walkableRadius * cfg.walkableClimb * cfg.ch;
+	const float pad_above = (cfg.walkableRadius * cfg.walkableClimb + cfg.walkableHeight) * cfg.ch;
 
 	cfg.bmin[0] = chunk_aabb.position.x - border * cs;
 	cfg.bmin[1] = chunk_aabb.position.y - pad_below;
@@ -46,6 +58,26 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	cfg.bmax[0] = chunk_aabb.position.x + chunk_aabb.size.x + border * cs;
 	cfg.bmax[1] = chunk_aabb.position.y + chunk_aabb.size.y + pad_above;
 	cfg.bmax[2] = chunk_aabb.position.z + chunk_aabb.size.z + border * cs;
+
+	// Validate that the heightfield bounds fit within the 3x3x3 neighbor
+	// volume.  If they don't, rasterization will be missing geometry and
+	// erosion/filtering will produce incorrect results at the boundary.
+	{
+		const Vector3 chunk_size = chunk_aabb.size;
+		const float neighbor_min_x = chunk_aabb.position.x - chunk_size.x;
+		const float neighbor_min_y = chunk_aabb.position.y - chunk_size.y;
+		const float neighbor_min_z = chunk_aabb.position.z - chunk_size.z;
+		const float neighbor_max_x = chunk_aabb.position.x + chunk_size.x * 2.0f;
+		const float neighbor_max_y = chunk_aabb.position.y + chunk_size.y * 2.0f;
+		const float neighbor_max_z = chunk_aabb.position.z + chunk_size.z * 2.0f;
+
+		ERR_FAIL_COND_MSG(
+				cfg.bmin[0] < neighbor_min_x || cfg.bmin[1] < neighbor_min_y || cfg.bmin[2] < neighbor_min_z ||
+				cfg.bmax[0] > neighbor_max_x || cfg.bmax[1] > neighbor_max_y || cfg.bmax[2] > neighbor_max_z,
+				format("NavMeshBuild: heightfield bounds exceed 3x3x3 neighbor volume for chunk ({},{},{})."
+					   " Reduce borderSize, walkableRadius, walkableClimb, or walkableHeight.",
+						chunk_position.x, chunk_position.y, chunk_position.z).c_str());
+	}
 
 	rcCalcGridSize(cfg.bmin, cfg.bmax, cfg.cs, &cfg.width, &cfg.height);
 
@@ -99,12 +131,9 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		// Must run AFTER LowHangingWalkableObstacles (ordering matters per Recast.h)
 		rcFilterLedgeSpans(&recast_ctx, cfg.walkableHeight, cfg.walkableClimb, *hf);
 	}
-	// TEMP: disabled to test Y-seam hypothesis — the low-height filter
-	// creates false ceilings where two chunks' surface meshes overlap
-	// vertically in the Y-padding zone.
-	// if (filter_low_height_spans) {
-	// 	rcFilterWalkableLowHeightSpans(&recast_ctx, cfg.walkableHeight, *hf);
-	// }
+	if (filter_low_height_spans) {
+		rcFilterWalkableLowHeightSpans(&recast_ctx, cfg.walkableHeight, *hf);
+	}
 
 	// --- Step 5: Compact, erode, build regions ---
 
@@ -124,48 +153,11 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	rcFreeHeightField(hf);
 	hf = nullptr;
 
-	// TEMP: disabled to test Y-seam hypothesis — erosion may be eating
-	// into walkable area at the Y boundary due to missing neighbor connectivity
-	// if (!rcErodeWalkableArea(&recast_ctx, cfg.walkableRadius, *chf)) {
-	// 	rcFreeCompactHeightfield(chf);
-	// 	ERR_FAIL_MSG("NavMeshBuild: Failed to erode walkable area");
-	// }
-
-	// --- Y-border exclusion (analog of XZ borderSize paintRectRegion) ---
-	//
-	// Mark compact spans whose walkable floor lies outside this chunk's
-	// owned Y range [chunk.y, chunk.y + size.y) as RC_NULL_AREA, so that
-	// region/contour/polymesh build produces polys only for spans we own.
-	// Recast's XZ tile mechanism does the same thing for the borderSize
-	// ring via paintRectRegion inside rcBuildRegions*. We're applying it
-	// here for Y because Recast has no built-in Y tiling.
-	//
-	// Critically this runs AFTER erode — the pad spans are walkable through
-	// erosion so the chunk interior isn't shrunk at the Y seams, matching
-	// how XZ borderSize spans stay walkable during erosion.
-	{
-		// Below box: everything with Y cell < chunk floor cell.
-		// Using (chunk.y - 0.5*ch) as the upper bound gives miny=0,
-		// maxy = chunk_floor_cell - 1 under rcMarkBoxArea's truncating
-		// integer conversion.
-		const float below_min[3] = { cfg.bmin[0], cfg.bmin[1], cfg.bmin[2] };
-		const float below_max[3] = {
-			cfg.bmax[0],
-			float(chunk_aabb.position.y) - 0.5f * cfg.ch,
-			cfg.bmax[2]
-		};
-		rcMarkBoxArea(&recast_ctx, below_min, below_max, RC_NULL_AREA, *chf);
-
-		// Above box: everything with Y cell >= chunk ceil cell.
-		// Using chunk.y + size.y exactly gives miny = chunk_ceil_cell,
-		// maxy = top of heightfield.
-		const float above_min[3] = {
-			cfg.bmin[0],
-			float(chunk_aabb.position.y + chunk_aabb.size.y),
-			cfg.bmin[2]
-		};
-		const float above_max[3] = { cfg.bmax[0], cfg.bmax[1], cfg.bmax[2] };
-		rcMarkBoxArea(&recast_ctx, above_min, above_max, RC_NULL_AREA, *chf);
+	if (use_erosion) {
+		if (!rcErodeWalkableArea(&recast_ctx, cfg.walkableRadius, *chf)) {
+			rcFreeCompactHeightfield(chf);
+			ERR_FAIL_MSG("NavMeshBuild: Failed to erode walkable area");
+		}
 	}
 
 	if (!rcBuildDistanceField(&recast_ctx, *chf)) {
@@ -180,6 +172,47 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		ERR_FAIL_MSG("NavMeshBuild: Failed to build regions");
 	}
 
+	// --- Y-border region assignment ---
+	//
+	// Y-border spans participated fully in rasterization, filtering,
+	// compaction, erosion, distance field, and region building — providing
+	// correct context for interior spans. Now overwrite their region IDs
+	// with RC_BORDER_REG so the contour builder skips them (matching XZ
+	// border behavior) and interior neighbors see portal edges instead of
+	// wall edges.
+	//
+	// Two distinct IDs (below/above) so that where Y-border meets other
+	// boundaries, the region change forces mandatory contour vertices.
+	{
+		const unsigned short y_border_below_reg =
+				(unsigned short)(chf->maxRegions) | RC_BORDER_REG;
+		const unsigned short y_border_above_reg =
+				(unsigned short)(chf->maxRegions + 1) | RC_BORDER_REG;
+		chf->maxRegions += 2;
+
+		// Chunk owned Y range in voxel units relative to chf bmin
+		const int chunk_y_min_voxel =
+				(int)floorf((chunk_aabb.position.y - chf->bmin[1]) / cfg.ch);
+		const int chunk_y_max_voxel =
+				(int)floorf((chunk_aabb.position.y + chunk_aabb.size.y - chf->bmin[1]) / cfg.ch);
+
+		const int w = chf->width;
+		const int h = chf->height;
+		for (int z = 0; z < h; ++z) {
+			for (int x = 0; x < w; ++x) {
+				const rcCompactCell &c = chf->cells[x + z * w];
+				for (int i = (int)c.index, ni = (int)(c.index + c.count); i < ni; ++i) {
+					const int sy = (int)chf->spans[i].y;
+					if (sy < chunk_y_min_voxel) {
+						chf->spans[i].reg = y_border_below_reg;
+					} else if (sy >= chunk_y_max_voxel) {
+						chf->spans[i].reg = y_border_above_reg;
+					}
+				}
+			}
+		}
+	}
+
 	// --- Step 6: Contours, polymesh, detail mesh ---
 
 	rcContourSet *cset = rcAllocContourSet();
@@ -188,8 +221,7 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		ERR_FAIL_MSG("NavMeshBuild: Failed to allocate contour set");
 	}
 
-	// TEMP: disable contour simplification to test Y-seam hypothesis
-	if (!rcBuildContours(&recast_ctx, *chf, 0.0f,
+	if (!rcBuildContours(&recast_ctx, *chf, cfg.maxSimplificationError,
 				cfg.maxEdgeLen, *cset)) {
 		rcFreeCompactHeightfield(chf);
 		rcFreeContourSet(cset);
@@ -210,93 +242,153 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		ERR_FAIL_MSG("NavMeshBuild: Failed to build poly mesh");
 	}
 
-	rcPolyMeshDetail *dmesh = rcAllocPolyMeshDetail();
-	if (!dmesh) {
+	if (use_detail_mesh) {
+		// --- Detail mesh path: adds height detail to the flat poly mesh ---
+
+		rcPolyMeshDetail *dmesh = rcAllocPolyMeshDetail();
+		if (!dmesh) {
+			rcFreeCompactHeightfield(chf);
+			rcFreeContourSet(cset);
+			rcFreePolyMesh(pmesh);
+			ERR_FAIL_MSG("NavMeshBuild: Failed to allocate detail mesh");
+		}
+
+		if (!rcBuildPolyMeshDetail(&recast_ctx, *pmesh, *chf,
+					cfg.detailSampleDist, cfg.detailSampleMaxError, *dmesh)) {
+			rcFreeCompactHeightfield(chf);
+			rcFreeContourSet(cset);
+			rcFreePolyMesh(pmesh);
+			rcFreePolyMeshDetail(dmesh);
+			ERR_FAIL_MSG("NavMeshBuild: Failed to build detail mesh");
+		}
+
 		rcFreeCompactHeightfield(chf);
 		rcFreeContourSet(cset);
-		rcFreePolyMesh(pmesh);
-		ERR_FAIL_MSG("NavMeshBuild: Failed to allocate detail mesh");
-	}
 
-	if (!rcBuildPolyMeshDetail(&recast_ctx, *pmesh, *chf,
-				cfg.detailSampleDist, cfg.detailSampleMaxError, *dmesh)) {
+		if (dmesh->nmeshes == 0 || dmesh->nverts == 0) {
+			rcFreePolyMesh(pmesh);
+			rcFreePolyMeshDetail(dmesh);
+			return;
+		}
+
+		// --- Convert rcPolyMeshDetail to NavigationMesh ---
+
+		result_nav_mesh.instantiate();
+
+		const Vector3 chunk_origin = chunk_aabb.position;
+
+		HashMap<Vector3, int> vertex_map;
+		PackedVector3Array unique_verts;
+		StdVector<int> deduped_index(dmesh->nverts);
+
+		for (int i = 0; i < dmesh->nverts; i++) {
+			const float *v = &dmesh->verts[i * 3];
+			Vector3 vert(v[0] - chunk_origin.x, v[1] - chunk_origin.y, v[2] - chunk_origin.z);
+
+			auto *it = vertex_map.getptr(vert);
+			if (it != nullptr) {
+				deduped_index[i] = *it;
+			} else {
+				int idx = unique_verts.size();
+				unique_verts.push_back(vert);
+				vertex_map[vert] = idx;
+				deduped_index[i] = idx;
+			}
+		}
+
+		for (int i = 0; i < dmesh->nmeshes; i++) {
+			const unsigned int *m = &dmesh->meshes[i * 4];
+			const unsigned int bverts = m[0];
+			const unsigned int btris = m[2];
+			const unsigned int ntris = m[3];
+
+			for (unsigned int j = 0; j < ntris; j++) {
+				const unsigned char *t = &dmesh->tris[(btris + j) * 4];
+				PackedInt32Array polygon;
+				polygon.resize(3);
+				polygon.write[0] = deduped_index[bverts + t[0]];
+				polygon.write[1] = deduped_index[bverts + t[1]];
+				polygon.write[2] = deduped_index[bverts + t[2]];
+				result_nav_mesh->add_polygon(polygon);
+			}
+		}
+
+		result_nav_mesh->set_vertices(unique_verts);
+		result_nav_mesh->set_cell_size(cfg.cs);
+		result_nav_mesh->set_cell_height(cfg.ch);
+
+		rcFreePolyMesh(pmesh);
+		rcFreePolyMeshDetail(dmesh);
+	} else {
+		// --- No detail mesh: convert rcPolyMesh directly ---
+		// Vertices are quantized to cell grid. This is useful for debugging
+		// since it shows exactly what the region/contour pipeline produced
+		// without any detail mesh interpolation.
+
 		rcFreeCompactHeightfield(chf);
 		rcFreeContourSet(cset);
-		rcFreePolyMesh(pmesh);
-		rcFreePolyMeshDetail(dmesh);
-		ERR_FAIL_MSG("NavMeshBuild: Failed to build detail mesh");
-	}
 
-	// Free intermediates no longer needed
-	rcFreeCompactHeightfield(chf);
-	rcFreeContourSet(cset);
-
-	// --- Step 7: Convert rcPolyMeshDetail to NavigationMesh ---
-
-	if (dmesh->nmeshes == 0 || dmesh->nverts == 0) {
-		rcFreePolyMesh(pmesh);
-		rcFreePolyMeshDetail(dmesh);
-		return;
-	}
-
-	result_nav_mesh.instantiate();
-
-	// Chunk world origin for converting Recast world-space output to chunk-local space.
-	// NavigationServer3D applies region_set_transform() to these vertices,
-	// so they must be relative to the chunk origin.
-	const Vector3 chunk_origin = chunk_aabb.position;
-
-	// Deduplicate vertices (detail mesh may have shared and interpolated vertices)
-	HashMap<Vector3, int> vertex_map;
-	PackedVector3Array unique_verts;
-	StdVector<int> deduped_index(dmesh->nverts);
-
-	for (int i = 0; i < dmesh->nverts; i++) {
-		const float *v = &dmesh->verts[i * 3];
-		// Convert from world space to chunk-local space
-		Vector3 vert(v[0] - chunk_origin.x, v[1] - chunk_origin.y, v[2] - chunk_origin.z);
-
-		auto *it = vertex_map.getptr(vert);
-		if (it != nullptr) {
-			deduped_index[i] = *it;
-		} else {
-			int idx = unique_verts.size();
-			unique_verts.push_back(vert);
-			vertex_map[vert] = idx;
-			deduped_index[i] = idx;
+		if (pmesh->npolys == 0 || pmesh->nverts == 0) {
+			rcFreePolyMesh(pmesh);
+			return;
 		}
-	}
 
-	// Extract triangles with reversed winding order (Godot convention)
-	for (int i = 0; i < dmesh->nmeshes; i++) {
-		const unsigned int *m = &dmesh->meshes[i * 4];
-		const unsigned int bverts = m[0]; // vertex start index
-		const unsigned int btris = m[2]; // triangle start index
-		const unsigned int ntris = m[3]; // triangle count
+		result_nav_mesh.instantiate();
 
-		for (unsigned int j = 0; j < ntris; j++) {
-			const unsigned char *t = &dmesh->tris[(btris + j) * 4];
-			PackedInt32Array polygon;
-			polygon.resize(3);
-			// Input triangles were already wound for Recast (CCW), so Recast output
-			// is in the correct orientation. No additional winding reversal needed.
-			polygon.write[0] = deduped_index[bverts + t[0]];
-			polygon.write[1] = deduped_index[bverts + t[1]];
-			polygon.write[2] = deduped_index[bverts + t[2]];
-			result_nav_mesh->add_polygon(polygon);
+		const Vector3 chunk_origin = chunk_aabb.position;
+
+		// rcPolyMesh vertices are stored as unsigned short [x, y, z] in cell units
+		// relative to pmesh->bmin. Convert to world-space then to chunk-local.
+		PackedVector3Array verts;
+		verts.resize(pmesh->nverts);
+		for (int i = 0; i < pmesh->nverts; i++) {
+			const unsigned short *pv = &pmesh->verts[i * 3];
+			float wx = pmesh->bmin[0] + pv[0] * pmesh->cs;
+			float wy = pmesh->bmin[1] + pv[1] * pmesh->ch;
+			float wz = pmesh->bmin[2] + pv[2] * pmesh->cs;
+			verts.write[i] = Vector3(wx - chunk_origin.x, wy - chunk_origin.y, wz - chunk_origin.z);
 		}
+
+		// rcPolyMesh polygons: each polygon is maxVertsPerPoly indices,
+		// with RC_MESH_NULL_IDX (0xffff) marking unused slots.
+		// Triangulate each polygon as a fan from vertex 0.
+		const int nvp = pmesh->nvp;
+		for (int i = 0; i < pmesh->npolys; i++) {
+			const unsigned short *p = &pmesh->polys[i * nvp * 2];
+
+			// Count valid vertices in this polygon
+			int nv = 0;
+			for (int j = 0; j < nvp; j++) {
+				if (p[j] == RC_MESH_NULL_IDX) {
+					break;
+				}
+				nv++;
+			}
+			if (nv < 3) {
+				continue;
+			}
+
+			// Fan triangulation
+			for (int j = 1; j < nv - 1; j++) {
+				PackedInt32Array polygon;
+				polygon.resize(3);
+				polygon.write[0] = p[0];
+				polygon.write[1] = p[j];
+				polygon.write[2] = p[j + 1];
+				result_nav_mesh->add_polygon(polygon);
+			}
+		}
+
+		result_nav_mesh->set_vertices(verts);
+		result_nav_mesh->set_cell_size(cfg.cs);
+		result_nav_mesh->set_cell_height(cfg.ch);
+
+		rcFreePolyMesh(pmesh);
 	}
-
-	result_nav_mesh->set_vertices(unique_verts);
-	result_nav_mesh->set_cell_size(cfg.cs);
-	result_nav_mesh->set_cell_height(cfg.ch);
-
-	rcFreePolyMesh(pmesh);
-	rcFreePolyMeshDetail(dmesh);
 
 	ZN_PRINT_VERBOSE(format("NavMeshBuild: chunk ({},{},{}) produced {} verts, {} polygons",
 			chunk_position.x, chunk_position.y, chunk_position.z,
-			unique_verts.size(), result_nav_mesh->get_polygon_count()));
+			result_nav_mesh->get_vertices().size(), result_nav_mesh->get_polygon_count()));
 }
 
 void NavMeshBuildTask::apply_result() {
