@@ -185,9 +185,9 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	// boundaries, the region change forces mandatory contour vertices.
 	{
 		const unsigned short y_border_below_reg =
-				(unsigned short)(chf->maxRegions) | RC_BORDER_REG;
-		const unsigned short y_border_above_reg =
 				(unsigned short)(chf->maxRegions + 1) | RC_BORDER_REG;
+		const unsigned short y_border_above_reg =
+				(unsigned short)(chf->maxRegions + 2) | RC_BORDER_REG;
 		chf->maxRegions += 2;
 
 		// Chunk owned Y range in voxel units relative to chf bmin
