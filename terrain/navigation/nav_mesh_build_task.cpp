@@ -31,7 +31,8 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	const AABB &chunk_aabb = chunk_triangles.world_aabb;
 
 	// Y bounds: chunk's own vertical extent, padded so that Y-neighbor
-	// geometry participates in filtering and erosion correctly.
+	// geometry participates in filtering, erosion, and the seam-strip
+	// region build correctly.
 	//
 	// Worst-case slope: terrain can rise/fall walkableClimb voxels per XZ
 	// cell.  Over walkableRadius cells (the erosion distance), that is
@@ -40,17 +41,18 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	// disconnected XZ edges that erosion treats as walls — shrinking the
 	// walkable interior at Y seams.
 	//
-	// pad_below  = walkableRadius * walkableClimb * ch
-	//   Covers worst-case downward slope over the erosion radius.
-	//   Also subsumes the plain walkableClimb needed for step-up
-	//   detection in rcFilterLedgeSpans (since walkableRadius >= 1).
+	// The seam-strip region build also needs y_band_strip_radius voxels of
+	// context on each side of the chunk's Y boundary so that neighboring
+	// chunks see the same pre-erosion span layout in the shared strip —
+	// otherwise strip region IDs would diverge and vertex alignment at the
+	// seam would fail.
 	//
-	// pad_above  = (walkableRadius * walkableClimb + walkableHeight) * ch
-	//   Same erosion term, plus walkableHeight so rcFilterLedgeSpans can
-	//   check clearance at the upper seam when stepping up into the next
-	//   Y-chunk.
-	const float pad_below = cfg.walkableRadius * cfg.walkableClimb * cfg.ch;
-	const float pad_above = (cfg.walkableRadius * cfg.walkableClimb + cfg.walkableHeight) * cfg.ch;
+	// pad_below  = (walkableRadius * walkableClimb + y_band_strip_radius) * ch
+	// pad_above  = (walkableRadius * walkableClimb + walkableHeight
+	//              + y_band_strip_radius) * ch
+	const float pad_below = (cfg.walkableRadius * cfg.walkableClimb + y_band_strip_radius) * cfg.ch;
+	const float pad_above =
+			(cfg.walkableRadius * cfg.walkableClimb + cfg.walkableHeight + y_band_strip_radius) * cfg.ch;
 
 	cfg.bmin[0] = chunk_aabb.position.x - border * cs;
 	cfg.bmin[1] = chunk_aabb.position.y - pad_below;
@@ -75,7 +77,8 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 				cfg.bmin[0] < neighbor_min_x || cfg.bmin[1] < neighbor_min_y || cfg.bmin[2] < neighbor_min_z ||
 				cfg.bmax[0] > neighbor_max_x || cfg.bmax[1] > neighbor_max_y || cfg.bmax[2] > neighbor_max_z,
 				format("NavMeshBuild: heightfield bounds exceed 3x3x3 neighbor volume for chunk ({},{},{})."
-					   " Reduce borderSize, walkableRadius, walkableClimb, or walkableHeight.",
+					   " Reduce borderSize, walkableRadius, walkableClimb, walkableHeight,"
+					   " or y_band_strip_radius.",
 						chunk_position.x, chunk_position.y, chunk_position.z).c_str());
 	}
 
@@ -165,53 +168,136 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		ERR_FAIL_MSG("NavMeshBuild: Failed to build distance field");
 	}
 
-	// Monotone partitioning - faster, good for runtime/streaming use
-	if (!rcBuildRegionsMonotone(&recast_ctx, *chf, cfg.borderSize,
-				cfg.minRegionArea, cfg.mergeRegionArea)) {
-		rcFreeCompactHeightfield(chf);
-		ERR_FAIL_MSG("NavMeshBuild: Failed to build regions");
+	// --- 3-band monotone region build for cross-chunk Y-seam determinism ---
+	//
+	// Problem: stock rcBuildRegionsMonotone partitions the entire chf as a
+	// single pass.  Its output is chunk-local — interior region IDs near a
+	// Y boundary fragment differently in each chunk, so the contour builder
+	// places mandatory vertices at different XZ positions along the shared
+	// seam, producing T-junctions when the two chunks' navmeshes meet.
+	//
+	// Fix: split the region sweep into three disjoint Y bands — a bottom
+	// strip around chunk_y_min, a middle band (chunk interior), and a top
+	// strip around chunk_y_max.  Each strip extends y_band_strip_radius
+	// voxels on either side of the chunk's Y boundary, so it fully overlaps
+	// the corresponding strip in the vertically-adjacent chunk.  Running
+	// monotone independently on each band, with identical input spans in
+	// the shared strips, gives vertically-adjacent chunks bit-identical
+	// strip region IDs — which makes contour vertices at the seam line up.
+	//
+	// Implementation: back up chf.areas, null-mask every span outside the
+	// target band (monotone skips null spans — RecastRegion.cpp:1412), run
+	// stock rcBuildRegionsMonotone (which gives us mergeAndFilterRegions
+	// for free per band), copy resulting IDs with an offset into a combined
+	// buffer, restore areas, and repeat for the next band.  Finally write
+	// the combined IDs into chf.spans[i].reg.
+	const int chunk_y_min_voxel =
+			(int)floorf((chunk_aabb.position.y - chf->bmin[1]) / cfg.ch);
+	const int chunk_y_max_voxel =
+			(int)floorf((chunk_aabb.position.y + chunk_aabb.size.y - chf->bmin[1]) / cfg.ch);
+
+	const int band_ranges[3][2] = {
+		// [bandYMin, bandYMax)
+		{ chunk_y_min_voxel - y_band_strip_radius, chunk_y_min_voxel + y_band_strip_radius },
+		{ chunk_y_min_voxel + y_band_strip_radius, chunk_y_max_voxel - y_band_strip_radius },
+		{ chunk_y_max_voxel - y_band_strip_radius, chunk_y_max_voxel + y_band_strip_radius },
+	};
+
+	StdVector<unsigned char> areas_backup(chf->spanCount);
+	memcpy(areas_backup.data(), chf->areas, chf->spanCount);
+
+	StdVector<unsigned short> combined_regs(chf->spanCount, 0);
+	unsigned short id_offset = 0;
+
+	for (int band = 0; band < 3; ++band) {
+		const int bandYMin = band_ranges[band][0];
+		const int bandYMax = band_ranges[band][1];
+		if (bandYMax <= bandYMin) {
+			continue; // middle band may be empty if the chunk is thinner than 2 * strip_radius
+		}
+
+		// Restore areas then null-mask everything outside this band.
+		memcpy(chf->areas, areas_backup.data(), chf->spanCount);
+		for (int i = 0; i < chf->spanCount; ++i) {
+			const int sy = (int)chf->spans[i].y;
+			if (sy < bandYMin || sy >= bandYMax) {
+				chf->areas[i] = RC_NULL_AREA;
+			}
+		}
+
+		if (!rcBuildRegionsMonotone(&recast_ctx, *chf, cfg.borderSize,
+					cfg.minRegionArea, cfg.mergeRegionArea)) {
+			memcpy(chf->areas, areas_backup.data(), chf->spanCount);
+			rcFreeCompactHeightfield(chf);
+			ERR_FAIL_MSG("NavMeshBuild: Failed to build regions for band");
+		}
+
+		// Copy in-band region IDs into the combined buffer with the current
+		// ID offset so IDs from different bands never collide.  Stock
+		// rcBuildRegionsMonotone assigns IDs starting from 1 and writes
+		// them to chf.spans[i].reg, setting out-of-band spans (those we
+		// null-masked) to 0 — we ignore those here.
+		for (int i = 0; i < chf->spanCount; ++i) {
+			const unsigned short r = chf->spans[i].reg;
+			if (r != 0) {
+				// Preserve the RC_BORDER_REG flag (painted by rcBuildRegionsMonotone
+				// on XZ-border spans) and offset only the numeric region ID.
+				const unsigned short flags = r & RC_BORDER_REG;
+				const unsigned short numeric = r & ~RC_BORDER_REG;
+				combined_regs[i] = (unsigned short)(numeric + id_offset) | flags;
+			}
+		}
+
+		// Next band's IDs start after this band's max.
+		id_offset = (unsigned short)(id_offset + chf->maxRegions);
 	}
+
+	// Restore areas for the remaining pipeline steps.
+	memcpy(chf->areas, areas_backup.data(), chf->spanCount);
 
 	// --- Y-border region assignment ---
 	//
-	// Y-border spans participated fully in rasterization, filtering,
-	// compaction, erosion, distance field, and region building — providing
-	// correct context for interior spans. Now overwrite their region IDs
-	// with RC_BORDER_REG so the contour builder skips them (matching XZ
-	// border behavior) and interior neighbors see portal edges instead of
-	// wall edges.
+	// Write combined region IDs into chf.  Spans strictly outside the
+	// chunk's own Y range are OVERWRITTEN with one of two single dedicated
+	// border IDs (below / above).  Using uniform IDs is essential for
+	// vertex alignment: rcBuildContours (RecastContour.cpp:878,919) skips
+	// tracing border-flagged spans, and walkContour (line 141) records the
+	// neighbor span's reg as each contour-edge point's annotation.
+	// simplifyContour (line 230) then places a mandatory vertex wherever
+	// that annotation changes.  If the out-of-chunk spans retained their
+	// per-band region IDs (only OR'd with RC_BORDER_REG), the varying IDs
+	// along the Y-face would produce the very T-junctions this three-band
+	// scheme exists to prevent.  A single uniform border ID per side means
+	// the contour along the Y-face sees no annotation changes — so no
+	// mandatory vertices arise from the Y-border itself.
 	//
-	// Two distinct IDs (below/above) so that where Y-border meets other
-	// boundaries, the region change forces mandatory contour vertices.
-	{
-		const unsigned short y_border_below_reg =
-				(unsigned short)(chf->maxRegions + 1) | RC_BORDER_REG;
-		const unsigned short y_border_above_reg =
-				(unsigned short)(chf->maxRegions + 2) | RC_BORDER_REG;
-		chf->maxRegions += 2;
+	// Two distinct IDs (below vs above) so that where Y-border meets other
+	// boundaries (XZ borders, interior region transitions), the region
+	// change still forces a corner vertex.
+	//
+	// Interior-side spans keep their band-region IDs (shared strip IDs on
+	// strip spans, chunk-local IDs on middle-band spans).  The contour of
+	// a shared-strip region then bounds the interior-side half only, with
+	// its Y-face neighbor being the uniform y_border_above_reg or
+	// y_border_below_reg — producing a clean portal edge at the seam that
+	// matches the symmetric edge in the vertically-adjacent chunk.
+	const unsigned short y_border_below_reg =
+			(unsigned short)(id_offset + 1) | RC_BORDER_REG;
+	const unsigned short y_border_above_reg =
+			(unsigned short)(id_offset + 2) | RC_BORDER_REG;
+	id_offset = (unsigned short)(id_offset + 2);
 
-		// Chunk owned Y range in voxel units relative to chf bmin
-		const int chunk_y_min_voxel =
-				(int)floorf((chunk_aabb.position.y - chf->bmin[1]) / cfg.ch);
-		const int chunk_y_max_voxel =
-				(int)floorf((chunk_aabb.position.y + chunk_aabb.size.y - chf->bmin[1]) / cfg.ch);
-
-		const int w = chf->width;
-		const int h = chf->height;
-		for (int z = 0; z < h; ++z) {
-			for (int x = 0; x < w; ++x) {
-				const rcCompactCell &c = chf->cells[x + z * w];
-				for (int i = (int)c.index, ni = (int)(c.index + c.count); i < ni; ++i) {
-					const int sy = (int)chf->spans[i].y;
-					if (sy < chunk_y_min_voxel) {
-						chf->spans[i].reg = y_border_below_reg;
-					} else if (sy >= chunk_y_max_voxel) {
-						chf->spans[i].reg = y_border_above_reg;
-					}
-				}
-			}
+	for (int i = 0; i < chf->spanCount; ++i) {
+		const int sy = (int)chf->spans[i].y;
+		if (sy < chunk_y_min_voxel) {
+			chf->spans[i].reg = y_border_below_reg;
+		} else if (sy >= chunk_y_max_voxel) {
+			chf->spans[i].reg = y_border_above_reg;
+		} else {
+			chf->spans[i].reg = combined_regs[i];
 		}
 	}
+	chf->maxRegions = id_offset;
 
 	// --- Step 6: Contours, polymesh, detail mesh ---
 

@@ -63,6 +63,7 @@ public:
 	bool use_erosion = true;
 	bool use_detail_mesh = true;
 	bool register_with_server = true;
+	int y_band_strip_radius = 2;
 
 	// Chunk geometry info
 	int mesh_block_size = 16;

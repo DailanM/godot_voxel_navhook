@@ -136,6 +136,9 @@ public:
 	void set_nav_region_merge_size(int size);
 	int get_nav_region_merge_size() const;
 
+	void set_nav_y_band_strip_radius(int radius);
+	int get_nav_y_band_strip_radius() const;
+
 	void set_nav_edge_max_length(float length);
 	float get_nav_edge_max_length() const;
 
@@ -457,6 +460,7 @@ private:
 	bool _nav_use_detail_mesh = true;
 	int _nav_region_min_size = 8;
 	int _nav_region_merge_size = 20;
+	int _nav_y_band_strip_radius = 2;
 	float _nav_edge_max_length = 3.2f;
 	float _nav_edge_max_error = 1.3f;
 	float _nav_detail_sample_dist = 1.2f;

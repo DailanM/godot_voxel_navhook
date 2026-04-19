@@ -29,6 +29,12 @@ public:
 	bool filter_low_height_spans = true;
 	bool use_erosion = true;
 	bool use_detail_mesh = true;
+	// Half-width (in cell_height voxels) of the seam strips around each Y
+	// chunk boundary.  The region builder runs monotone on three disjoint
+	// Y bands — a bottom strip, a middle band, and a top strip — so that
+	// vertically-adjacent chunks produce bit-identical strip region IDs
+	// and their contour vertices line up at the seam.
+	int y_band_strip_radius = 2;
 
 	// Output
 	Ref<NavigationMesh> result_nav_mesh;

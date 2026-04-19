@@ -573,6 +573,19 @@ int VoxelTerrain::get_nav_region_merge_size() const {
 	return _nav_region_merge_size;
 }
 
+void VoxelTerrain::set_nav_y_band_strip_radius(int radius) {
+	if (radius < 1) {
+		WARN_PRINT("nav_y_band_strip_radius must be at least 1");
+		radius = 1;
+	}
+	_nav_y_band_strip_radius = radius;
+	_recompute_nav_config();
+}
+
+int VoxelTerrain::get_nav_y_band_strip_radius() const {
+	return _nav_y_band_strip_radius;
+}
+
 void VoxelTerrain::set_nav_edge_max_length(float length) {
 	if (length <= 0.0f) {
 		WARN_PRINT("nav_edge_max_length must be greater than 0");
@@ -690,6 +703,7 @@ void VoxelTerrain::_recompute_nav_config() {
 	_nav_mesh_manager->use_erosion = _nav_use_erosion;
 	_nav_mesh_manager->use_detail_mesh = _nav_use_detail_mesh;
 	_nav_mesh_manager->register_with_server = _nav_register_with_server;
+	_nav_mesh_manager->y_band_strip_radius = _nav_y_band_strip_radius;
 
 	// Sync navigation map cell size/height so edge stitching works correctly
 	if (_nav_mesh_manager->_nav_map_rid.is_valid()) {
@@ -2970,6 +2984,9 @@ void VoxelTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_nav_region_min_size"), &Self::get_nav_region_min_size);
 	ClassDB::bind_method(D_METHOD("set_nav_region_merge_size", "size"), &Self::set_nav_region_merge_size);
 	ClassDB::bind_method(D_METHOD("get_nav_region_merge_size"), &Self::get_nav_region_merge_size);
+	ClassDB::bind_method(
+			D_METHOD("set_nav_y_band_strip_radius", "radius"), &Self::set_nav_y_band_strip_radius);
+	ClassDB::bind_method(D_METHOD("get_nav_y_band_strip_radius"), &Self::get_nav_y_band_strip_radius);
 	ClassDB::bind_method(D_METHOD("set_nav_edge_max_length", "length"), &Self::set_nav_edge_max_length);
 	ClassDB::bind_method(D_METHOD("get_nav_edge_max_length"), &Self::get_nav_edge_max_length);
 	ClassDB::bind_method(D_METHOD("set_nav_edge_max_error", "error"), &Self::set_nav_edge_max_error);
@@ -3038,6 +3055,10 @@ void VoxelTerrain::_bind_methods() {
 			PropertyInfo(Variant::INT, "nav_region_merge_size"),
 			"set_nav_region_merge_size",
 			"get_nav_region_merge_size");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "nav_y_band_strip_radius", PROPERTY_HINT_RANGE, "1,16,1"),
+			"set_nav_y_band_strip_radius",
+			"get_nav_y_band_strip_radius");
 	ADD_PROPERTY(
 			PropertyInfo(Variant::FLOAT, "nav_edge_max_length"),
 			"set_nav_edge_max_length",
