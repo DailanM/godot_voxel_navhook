@@ -168,40 +168,70 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		ERR_FAIL_MSG("NavMeshBuild: Failed to build distance field");
 	}
 
-	// --- 3-band monotone region build for cross-chunk Y-seam determinism ---
+	// --- 5-band monotone region build for cross-chunk Y-seam determinism ---
 	//
-	// Problem: stock rcBuildRegionsMonotone partitions the entire chf as a
-	// single pass.  Its output is chunk-local — interior region IDs near a
-	// Y boundary fragment differently in each chunk, so the contour builder
-	// places mandatory vertices at different XZ positions along the shared
-	// seam, producing T-junctions when the two chunks' navmeshes meet.
+	// Stock rcBuildRegionsMonotone partitions the entire chf in one pass, so
+	// its output is chunk-local — interior region IDs near a Y boundary
+	// fragment differently in each chunk, and rcBuildContours's simplify
+	// step (RecastContour.cpp:230) places mandatory vertices at every
+	// neighbor-region transition, producing T-junctions along the seam.
 	//
-	// Fix: split the region sweep into three disjoint Y bands — a bottom
-	// strip around chunk_y_min, a middle band (chunk interior), and a top
-	// strip around chunk_y_max.  Each strip extends y_band_strip_radius
-	// voxels on either side of the chunk's Y boundary, so it fully overlaps
-	// the corresponding strip in the vertically-adjacent chunk.  Running
-	// monotone independently on each band, with identical input spans in
-	// the shared strips, gives vertically-adjacent chunks bit-identical
-	// strip region IDs — which makes contour vertices at the seam line up.
+	// Fix: split the sweep into five disjoint Y bands.
 	//
-	// Implementation: back up chf.areas, null-mask every span outside the
-	// target band (monotone skips null spans — RecastRegion.cpp:1412), run
-	// stock rcBuildRegionsMonotone (which gives us mergeAndFilterRegions
-	// for free per band), copy resulting IDs with an offset into a combined
-	// buffer, restore areas, and repeat for the next band.  Finally write
-	// the combined IDs into chf.spans[i].reg.
+	//   B1: [chunk_y_min - R, chunk_y_min)       — EXTERIOR below bottom
+	//   B2: [chunk_y_min,     chunk_y_min + R)   — interior near bottom
+	//   B3: [chunk_y_min + R, chunk_y_max - R)   — interior middle
+	//   B4: [chunk_y_max - R, chunk_y_max)       — interior near top
+	//   B5: [chunk_y_max,     chunk_y_max + R)   — EXTERIOR above top
+	//
+	// Each band gets its own sub-monotone pass (we null-mask every span
+	// outside the target band before each call — rcBuildRegionsMonotone
+	// skips null-area spans at RecastRegion.cpp:1412).  Since bands are
+	// disjoint Y slabs, a region cannot span multiple bands via climb-
+	// bridging — eliminating the "one region ID assigned to multiple
+	// disconnected XZ components" failure we had with a single-strip sweep.
+	//
+	// Band identity across chunks:
+	//   Chunk A's B5 spans == Chunk B's B2 spans  (shared +Y seam)
+	//   Chunk A's B4 spans == Chunk B's B1 spans  (shared +Y seam, below)
+	// Sub-monotone is deterministic given identical inputs, so the XZ
+	// partition inside each shared band matches bit-identically across the
+	// two chunks.
+	//
+	// Exterior bands (B1, B5): region IDs get RC_BORDER_REG OR'd on so
+	// rcBuildContours skips tracing their contours (RecastContour.cpp:878,
+	// 919 — no duplicate polygons with the adjacent chunk's interior).
+	// Crucially, each exterior region keeps its own distinct ID (NOT a
+	// single uniform border ID).  When an interior band's contour walks
+	// its seam-facing edge, walkContour records each raw point's neighbor
+	// reg (RecastContour.cpp:141), so the contour sees the EXTERIOR band's
+	// region partition — which matches the adjacent chunk's interior
+	// partition, giving bit-matching mandatory vertex placements on both
+	// sides of the seam.
+	//
+	// Band radius constraint: R must be >= walkableClimb.  Otherwise a
+	// span's XZ neighbor (reachable via walkableClimb in the full-chf
+	// connectivity graph) could lie outside this band and we'd lose
+	// visibility of the adjacent chunk's region structure at the seam.
+	ERR_FAIL_COND_MSG(y_band_strip_radius < cfg.walkableClimb,
+			format("NavMeshBuild: y_band_strip_radius ({}) must be >= walkableClimb ({}) "
+				   "to guarantee cross-seam region visibility",
+					y_band_strip_radius, cfg.walkableClimb).c_str());
+
 	const int chunk_y_min_voxel =
 			(int)floorf((chunk_aabb.position.y - chf->bmin[1]) / cfg.ch);
 	const int chunk_y_max_voxel =
 			(int)floorf((chunk_aabb.position.y + chunk_aabb.size.y - chf->bmin[1]) / cfg.ch);
 
-	const int band_ranges[3][2] = {
+	const int band_ranges[5][2] = {
 		// [bandYMin, bandYMax)
-		{ chunk_y_min_voxel - y_band_strip_radius, chunk_y_min_voxel + y_band_strip_radius },
-		{ chunk_y_min_voxel + y_band_strip_radius, chunk_y_max_voxel - y_band_strip_radius },
-		{ chunk_y_max_voxel - y_band_strip_radius, chunk_y_max_voxel + y_band_strip_radius },
+		{ chunk_y_min_voxel - y_band_strip_radius, chunk_y_min_voxel },                          // B1 exterior
+		{ chunk_y_min_voxel,                        chunk_y_min_voxel + y_band_strip_radius },   // B2 interior strip
+		{ chunk_y_min_voxel + y_band_strip_radius,  chunk_y_max_voxel - y_band_strip_radius },   // B3 middle
+		{ chunk_y_max_voxel - y_band_strip_radius,  chunk_y_max_voxel },                         // B4 interior strip
+		{ chunk_y_max_voxel,                        chunk_y_max_voxel + y_band_strip_radius },   // B5 exterior
 	};
+	const bool band_is_exterior[5] = { true, false, false, false, true };
 
 	StdVector<unsigned char> areas_backup(chf->spanCount);
 	memcpy(areas_backup.data(), chf->areas, chf->spanCount);
@@ -209,11 +239,12 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 	StdVector<unsigned short> combined_regs(chf->spanCount, 0);
 	unsigned short id_offset = 0;
 
-	for (int band = 0; band < 3; ++band) {
+	for (int band = 0; band < 5; ++band) {
 		const int bandYMin = band_ranges[band][0];
 		const int bandYMax = band_ranges[band][1];
 		if (bandYMax <= bandYMin) {
-			continue; // middle band may be empty if the chunk is thinner than 2 * strip_radius
+			// B3 (middle) can be empty if the chunk is thinner than 2 * R.
+			continue;
 		}
 
 		// Restore areas then null-mask everything outside this band.
@@ -225,8 +256,21 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 			}
 		}
 
+		// Only the middle band (B3) applies the user's minRegionArea filter.
+		// Strip bands (B2/B4) and exterior bands (B1/B5) are too thin in Y
+		// for cfg.minRegionArea to be meaningful — applying it per-band
+		// would drop regions that would have passed a full-chf sweep, and
+		// dropped regions become null spans (walkability holes at the
+		// seam).  Exterior dropped regions are equally harmful: they'd
+		// leave interior-side contours seeing "null wall" instead of a
+		// border-flagged portal, breaking seam connectivity.
+		//
+		// mergeRegionArea stays at the user's setting everywhere — merging
+		// consolidates IDs but does not drop spans.
+		const int band_min_region_area = (band == 2) ? cfg.minRegionArea : 0;
+
 		if (!rcBuildRegionsMonotone(&recast_ctx, *chf, cfg.borderSize,
-					cfg.minRegionArea, cfg.mergeRegionArea)) {
+					band_min_region_area, cfg.mergeRegionArea)) {
 			memcpy(chf->areas, areas_backup.data(), chf->spanCount);
 			rcFreeCompactHeightfield(chf);
 			ERR_FAIL_MSG("NavMeshBuild: Failed to build regions for band");
@@ -235,67 +279,36 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		// Copy in-band region IDs into the combined buffer with the current
 		// ID offset so IDs from different bands never collide.  Stock
 		// rcBuildRegionsMonotone assigns IDs starting from 1 and writes
-		// them to chf.spans[i].reg, setting out-of-band spans (those we
-		// null-masked) to 0 — we ignore those here.
+		// them into chf.spans[i].reg; out-of-band spans (those we null-
+		// masked) stay at 0.
+		//
+		// Exterior bands (B1, B5) additionally OR on RC_BORDER_REG so
+		// rcBuildContours skips tracing their contours while still
+		// reporting their distinct IDs as neighbor-reg annotations to
+		// interior contours walking the seam face.
+		const unsigned short exterior_flag = band_is_exterior[band] ? RC_BORDER_REG : 0;
 		for (int i = 0; i < chf->spanCount; ++i) {
 			const unsigned short r = chf->spans[i].reg;
 			if (r != 0) {
-				// Preserve the RC_BORDER_REG flag (painted by rcBuildRegionsMonotone
-				// on XZ-border spans) and offset only the numeric region ID.
+				// Preserve any RC_BORDER_REG already set (from the sub-call's
+				// own XZ borderSize paint) and offset only the numeric part.
 				const unsigned short flags = r & RC_BORDER_REG;
 				const unsigned short numeric = r & ~RC_BORDER_REG;
-				combined_regs[i] = (unsigned short)(numeric + id_offset) | flags;
+				combined_regs[i] = (unsigned short)(numeric + id_offset) | flags | exterior_flag;
 			}
 		}
 
-		// Next band's IDs start after this band's max.
 		id_offset = (unsigned short)(id_offset + chf->maxRegions);
 	}
 
 	// Restore areas for the remaining pipeline steps.
 	memcpy(chf->areas, areas_backup.data(), chf->spanCount);
 
-	// --- Y-border region assignment ---
-	//
-	// Write combined region IDs into chf.  Spans strictly outside the
-	// chunk's own Y range are OVERWRITTEN with one of two single dedicated
-	// border IDs (below / above).  Using uniform IDs is essential for
-	// vertex alignment: rcBuildContours (RecastContour.cpp:878,919) skips
-	// tracing border-flagged spans, and walkContour (line 141) records the
-	// neighbor span's reg as each contour-edge point's annotation.
-	// simplifyContour (line 230) then places a mandatory vertex wherever
-	// that annotation changes.  If the out-of-chunk spans retained their
-	// per-band region IDs (only OR'd with RC_BORDER_REG), the varying IDs
-	// along the Y-face would produce the very T-junctions this three-band
-	// scheme exists to prevent.  A single uniform border ID per side means
-	// the contour along the Y-face sees no annotation changes — so no
-	// mandatory vertices arise from the Y-border itself.
-	//
-	// Two distinct IDs (below vs above) so that where Y-border meets other
-	// boundaries (XZ borders, interior region transitions), the region
-	// change still forces a corner vertex.
-	//
-	// Interior-side spans keep their band-region IDs (shared strip IDs on
-	// strip spans, chunk-local IDs on middle-band spans).  The contour of
-	// a shared-strip region then bounds the interior-side half only, with
-	// its Y-face neighbor being the uniform y_border_above_reg or
-	// y_border_below_reg — producing a clean portal edge at the seam that
-	// matches the symmetric edge in the vertically-adjacent chunk.
-	const unsigned short y_border_below_reg =
-			(unsigned short)(id_offset + 1) | RC_BORDER_REG;
-	const unsigned short y_border_above_reg =
-			(unsigned short)(id_offset + 2) | RC_BORDER_REG;
-	id_offset = (unsigned short)(id_offset + 2);
-
+	// Write combined region IDs into chf.  Out-of-all-bands spans (in the
+	// pad region beyond the outermost band) retain reg = 0; rcBuildContours
+	// skips them (RecastContour.cpp:878).
 	for (int i = 0; i < chf->spanCount; ++i) {
-		const int sy = (int)chf->spans[i].y;
-		if (sy < chunk_y_min_voxel) {
-			chf->spans[i].reg = y_border_below_reg;
-		} else if (sy >= chunk_y_max_voxel) {
-			chf->spans[i].reg = y_border_above_reg;
-		} else {
-			chf->spans[i].reg = combined_regs[i];
-		}
+		chf->spans[i].reg = combined_regs[i];
 	}
 	chf->maxRegions = id_offset;
 
