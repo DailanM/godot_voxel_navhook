@@ -2,6 +2,7 @@
 
 #ifdef VOXEL_ENABLE_NAVIGATION
 
+#include "nav_build_contours_raw.h"
 #include "../../util/io/log.h"
 #include "../../util/profiling.h"
 #include "../../util/string/format.h"
@@ -320,8 +321,10 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		ERR_FAIL_MSG("NavMeshBuild: Failed to allocate contour set");
 	}
 
-	if (!rcBuildContours(&recast_ctx, *chf, cfg.maxSimplificationError,
-				cfg.maxEdgeLen, *cset)) {
+	// DIAGNOSTIC: use the raw (non-simplified) contour builder to inspect
+	// per-edge vertex placement along chunk-seam contours.  See
+	// nav_build_contours_raw.h.
+	if (!nav_build_contours_raw(&recast_ctx, *chf, *cset)) {
 		rcFreeCompactHeightfield(chf);
 		rcFreeContourSet(cset);
 		ERR_FAIL_MSG("NavMeshBuild: Failed to build contours");
