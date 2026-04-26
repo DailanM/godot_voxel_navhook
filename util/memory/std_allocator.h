@@ -49,7 +49,10 @@ struct StdDefaultAllocator {
 		return nullptr;
 	}
 
-	void deallocate(T *p, std::size_t n) noexcept {
+	__attribute__((noinline)) void deallocate(T *p, std::size_t n) noexcept {
+		if (p == nullptr) {
+			return;
+		}
 #ifdef DEBUG_ENABLED
 		StdDefaultAllocatorCounters::g_deallocated += n * sizeof(T);
 #endif
