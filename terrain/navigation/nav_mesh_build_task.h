@@ -38,6 +38,11 @@ public:
 
 	// Output
 	Ref<NavigationMesh> result_nav_mesh;
+	// Parallel to result_nav_mesh polygons: one region ID per polygon
+	// (each NavigationMesh polygon is a single triangle).  Used by the
+	// debug viewer to color triangles by their source Recast region —
+	// temporary diagnostic for the cross-chunk seam bug.
+	PackedInt32Array result_poly_regions;
 
 	// Dependency
 	std::shared_ptr<NavMeshManager> nav_mesh_manager;

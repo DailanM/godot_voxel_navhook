@@ -20,6 +20,16 @@ extends Node3D
 @export var boundary_edge_color: Color = Color(0.0, 0.5, 0.8, 1.0)
 @export var edge_y_offset: float = 0.02
 
+@export_group("Region Coloring")
+# 0 = Cycle through region_cycle_palette; 1 = HSV hue from region ID
+@export_enum("Cycle 4", "HSV Hue") var region_color_mode: int = 0
+@export var region_cycle_palette: PackedColorArray = PackedColorArray([
+	Color(0.90, 0.30, 0.30, 0.5),
+	Color(0.30, 0.70, 0.90, 0.5),
+	Color(0.95, 0.80, 0.25, 0.5),
+	Color(0.55, 0.35, 0.85, 0.5),
+])
+
 var _instances: Array[MeshInstance3D] = []
 
 func refresh_nav() -> void:
@@ -51,6 +61,12 @@ func refresh_nav() -> void:
 	for entry in nav_meshes:
 		var xform: Transform3D = entry[0]
 		var nav_mesh: NavigationMesh = entry[1]
+		# Third element added by debug_get_nav_meshes: one Recast region ID
+		# per NavigationMesh polygon.  Fall back to empty if the module hasn't
+		# been rebuilt yet.
+		var poly_regions: PackedInt32Array = PackedInt32Array()
+		if entry.size() >= 3 and entry[2] != null:
+			poly_regions = entry[2]
 		if nav_mesh == null:
 			continue
 		var verts := nav_mesh.get_vertices()
@@ -76,6 +92,7 @@ func refresh_nav() -> void:
 			"nav_mesh": nav_mesh,
 			"verts": verts,
 			"edges": edges,
+			"poly_regions": poly_regions,
 		})
 
 	# Second pass: build meshes
@@ -84,28 +101,40 @@ func refresh_nav() -> void:
 		var nav_mesh: NavigationMesh = rd["nav_mesh"]
 		var verts: PackedVector3Array = rd["verts"]
 		var edges: Array = rd["edges"]
+		var poly_regions: PackedInt32Array = rd["poly_regions"]
 
-		# --- Face mesh ---
+		# --- Face mesh (region-colored via vertex colors) ---
 		if show_faces:
-			var indices := PackedInt32Array()
-			for i in nav_mesh.get_polygon_count():
+			# Build an un-indexed triangle soup so each triangle can carry
+			# its own (region-derived) vertex color.
+			var tri_verts := PackedVector3Array()
+			var tri_colors := PackedColorArray()
+			var poly_count := nav_mesh.get_polygon_count()
+			var have_regions := poly_regions.size() == poly_count
+			for i in poly_count:
 				var poly = nav_mesh.get_polygon(i)
+				var region_id: int = poly_regions[i] if have_regions else 0
+				var tri_color := _region_color(region_id)
 				for j in range(1, poly.size() - 1):
-					indices.append(poly[0])
-					indices.append(poly[j])
-					indices.append(poly[j + 1])
+					tri_verts.append(verts[poly[0]])
+					tri_verts.append(verts[poly[j]])
+					tri_verts.append(verts[poly[j + 1]])
+					tri_colors.append(tri_color)
+					tri_colors.append(tri_color)
+					tri_colors.append(tri_color)
 
-			if indices.size() > 0:
+			if tri_verts.size() > 0:
 				var arr := []
 				arr.resize(Mesh.ARRAY_MAX)
-				arr[Mesh.ARRAY_VERTEX] = verts
-				arr[Mesh.ARRAY_INDEX] = indices
+				arr[Mesh.ARRAY_VERTEX] = tri_verts
+				arr[Mesh.ARRAY_COLOR] = tri_colors
 
 				var arr_mesh := ArrayMesh.new()
 				arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 
 				var mat := StandardMaterial3D.new()
-				mat.albedo_color = face_color
+				mat.albedo_color = Color(1, 1, 1, 1)
+				mat.vertex_color_use_as_albedo = true
 				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 				mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 				mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -172,6 +201,17 @@ func _add_line_mesh(line_verts: PackedVector3Array, color: Color, xform: Transfo
 	mesh_inst.transform = xform
 	add_child(mesh_inst)
 	_instances.append(mesh_inst)
+
+
+func _region_color(region_id: int) -> Color:
+	match region_color_mode:
+		1: # HSV Hue
+			var hue := fposmod(region_id * 0.17, 1.0)
+			return Color.from_hsv(hue, 0.65, 0.9, face_color.a)
+		_: # Cycle palette
+			if region_cycle_palette.size() == 0:
+				return face_color
+			return region_cycle_palette[region_id % region_cycle_palette.size()]
 
 
 func _make_edge_key(a: Vector3, b: Vector3) -> String:

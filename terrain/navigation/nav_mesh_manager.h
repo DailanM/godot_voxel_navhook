@@ -43,12 +43,15 @@ public:
 	void remove_obstacle(int obstacle_id);
 	void update_obstacle_transform(int obstacle_id, Transform3D new_transform);
 
-	void apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> nav_mesh, uint32_t build_generation);
+	void apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> nav_mesh, PackedInt32Array poly_regions,
+			uint32_t build_generation);
 
 	void remove_chunk(Vector3i chunk_pos);
 	void clear_all();
 
-	// Debug: returns Array of [Transform3D, NavigationMesh] pairs for visualization
+	// Debug: returns Array of [Transform3D, NavigationMesh, PackedInt32Array] triples.
+	// The int32 array is a per-polygon region ID (one entry per NavigationMesh
+	// polygon — each polygon is a single triangle).  Temporary diagnostic.
 	Array debug_get_nav_meshes() const;
 
 	// Cancellation
@@ -98,6 +101,8 @@ private:
 	struct RegionEntry {
 		RID rid;
 		Ref<NavigationMesh> nav_mesh;
+		// One Recast region ID per polygon of nav_mesh (debug viewer).
+		PackedInt32Array poly_regions;
 	};
 	HashMap<Vector3i, RegionEntry> _regions;
 

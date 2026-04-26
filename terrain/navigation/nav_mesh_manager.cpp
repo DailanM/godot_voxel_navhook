@@ -78,7 +78,8 @@ void NavMeshManager::update_obstacle_transform(int obstacle_id, Transform3D new_
 
 // --- Main thread: results ---
 
-void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> nav_mesh, uint32_t build_generation) {
+void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> nav_mesh, PackedInt32Array poly_regions,
+		uint32_t build_generation) {
 	// Skip stale results — a newer build was already applied
 	auto *gen_ptr = _applied_generations.getptr(chunk_pos);
 	if (gen_ptr != nullptr && build_generation <= *gen_ptr) {
@@ -88,6 +89,7 @@ void NavMeshManager::apply_nav_result(Vector3i chunk_pos, Ref<NavigationMesh> na
 
 	RegionEntry &region = _regions[chunk_pos];
 	region.nav_mesh = nav_mesh;
+	region.poly_regions = poly_regions;
 
 	if (register_with_server) {
 		NavigationServer3D *ns = NavigationServer3D::get_singleton();
@@ -141,9 +143,10 @@ Array NavMeshManager::debug_get_nav_meshes() const {
 	for (const KeyValue<Vector3i, RegionEntry> &kv : _regions) {
 		if (kv.value.nav_mesh.is_valid()) {
 			Array entry;
-			entry.resize(2);
+			entry.resize(3);
 			entry[0] = _chunk_to_world(kv.key);
 			entry[1] = kv.value.nav_mesh;
+			entry[2] = kv.value.poly_regions;
 			result.push_back(entry);
 		}
 	}

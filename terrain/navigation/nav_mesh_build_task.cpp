@@ -83,6 +83,7 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 						chunk_position.x, chunk_position.y, chunk_position.z).c_str());
 	}
 
+	// Calculate width and height (now in cs units) from bounding box
 	rcCalcGridSize(cfg.bmin, cfg.bmax, cfg.cs, &cfg.width, &cfg.height);
 
 	rcHeightfield *hf = rcAllocHeightfield();
@@ -403,6 +404,9 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 			const unsigned int bverts = m[0];
 			const unsigned int btris = m[2];
 			const unsigned int ntris = m[3];
+			// dmesh->meshes is indexed by source pmesh polygon, so all
+			// detail triangles for mesh entry i share pmesh->regs[i].
+			const int region_id = (int)pmesh->regs[i];
 
 			for (unsigned int j = 0; j < ntris; j++) {
 				const unsigned char *t = &dmesh->tris[(btris + j) * 4];
@@ -412,6 +416,7 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 				polygon.write[1] = deduped_index[bverts + t[1]];
 				polygon.write[2] = deduped_index[bverts + t[2]];
 				result_nav_mesh->add_polygon(polygon);
+				result_poly_regions.push_back(region_id);
 			}
 		}
 
@@ -457,6 +462,7 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		const int nvp = pmesh->nvp;
 		for (int i = 0; i < pmesh->npolys; i++) {
 			const unsigned short *p = &pmesh->polys[i * nvp * 2];
+			const int region_id = (int)pmesh->regs[i];
 
 			// Count valid vertices in this polygon
 			int nv = 0;
@@ -478,6 +484,7 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 				polygon.write[1] = p[j];
 				polygon.write[2] = p[j + 1];
 				result_nav_mesh->add_polygon(polygon);
+				result_poly_regions.push_back(region_id);
 			}
 		}
 
@@ -495,7 +502,7 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 
 void NavMeshBuildTask::apply_result() {
 	if (nav_mesh_manager && nav_mesh_manager->valid && result_nav_mesh.is_valid()) {
-		nav_mesh_manager->apply_nav_result(chunk_position, result_nav_mesh, build_generation);
+		nav_mesh_manager->apply_nav_result(chunk_position, result_nav_mesh, result_poly_regions, build_generation);
 	}
 }
 
