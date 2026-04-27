@@ -18,6 +18,26 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 			neighbor_triangles.size(),
 			obstacles.size()));
 
+	if (debug_this_chunk) {
+		print_line(format("[NAV DEBUG] === Building chunk ({},{},{}) ===",
+				chunk_position.x, chunk_position.y, chunk_position.z));
+		print_line(format("[NAV DEBUG] Input: {} triangles, {} neighbors, {} obstacles",
+				chunk_triangles.indices.size() / 3,
+				neighbor_triangles.size(),
+				obstacles.size()));
+		print_line(format("[NAV DEBUG] AABB: origin=({:.2f},{:.2f},{:.2f}) size=({:.2f},{:.2f},{:.2f})",
+				chunk_triangles.world_aabb.position.x,
+				chunk_triangles.world_aabb.position.y,
+				chunk_triangles.world_aabb.position.z,
+				chunk_triangles.world_aabb.size.x,
+				chunk_triangles.world_aabb.size.y,
+				chunk_triangles.world_aabb.size.z));
+		print_line(format("[NAV DEBUG] Config: cs={:.3f} ch={:.3f} walkableRadius={} walkableHeight={} "
+				"walkableClimb={} slopeAngle={:.1f} borderSize={}",
+				cfg.cs, cfg.ch, cfg.walkableRadius, cfg.walkableHeight,
+				cfg.walkableClimb, cfg.walkableSlopeAngle, cfg.borderSize));
+	}
+
 	rcContext recast_ctx;
 
 	// --- Step 1: Setup heightfield bounds ---
@@ -123,6 +143,10 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		rasterize(neighbor);
 	}
 
+	if (debug_this_chunk) {
+		print_line(format("[NAV DEBUG] Heightfield: {}x{} cells", cfg.width, cfg.height));
+	}
+
 	// --- Step 3: Rasterize obstacles ---
 	// Obstacle mesh extraction will be implemented in Phase 5.
 	// The obstacle snapshot is already captured in the `obstacles` vector.
@@ -163,6 +187,11 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 			rcFreeCompactHeightfield(chf);
 			ERR_FAIL_MSG("NavMeshBuild: Failed to erode walkable area");
 		}
+	}
+
+	if (debug_this_chunk) {
+		print_line(format("[NAV DEBUG] Compact heightfield: {} spans (after erosion={})",
+				chf->spanCount, use_erosion));
 	}
 
 	if (!rcBuildDistanceField(&recast_ctx, *chf)) {
@@ -313,6 +342,10 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		chf->spans[i].reg = combined_regs[i];
 	}
 	chf->maxRegions = id_offset;
+
+	if (debug_this_chunk) {
+		print_line(format("[NAV DEBUG] Region build: {} total regions across 5 Y-bands", id_offset));
+	}
 
 	// --- Step 6: Contours, polymesh, detail mesh ---
 
@@ -493,6 +526,15 @@ void NavMeshBuildTask::run(ThreadedTaskContext &ctx) {
 		result_nav_mesh->set_cell_height(cfg.ch);
 
 		rcFreePolyMesh(pmesh);
+	}
+
+	if (debug_this_chunk) {
+		print_line(format("[NAV DEBUG] Result: {} verts, {} polygons (detail_mesh={})",
+				result_nav_mesh->get_vertices().size(),
+				result_nav_mesh->get_polygon_count(),
+				use_detail_mesh));
+		print_line(format("[NAV DEBUG] === Done chunk ({},{},{}) ===",
+				chunk_position.x, chunk_position.y, chunk_position.z));
 	}
 
 	ZN_PRINT_VERBOSE(format("NavMeshBuild: chunk ({},{},{}) produced {} verts, {} polygons",

@@ -645,6 +645,17 @@ bool VoxelTerrain::get_nav_register_with_server() const {
 	return _nav_register_with_server;
 }
 
+void VoxelTerrain::set_nav_debug_chunk(Vector3i chunk) {
+	_nav_debug_chunk = chunk;
+	if (_nav_mesh_manager) {
+		_nav_mesh_manager->debug_chunk = chunk;
+	}
+}
+
+Vector3i VoxelTerrain::get_nav_debug_chunk() const {
+	return _nav_debug_chunk;
+}
+
 int VoxelTerrain::add_nav_obstacle(Ref<Mesh> collision_mesh, Transform3D transform, bool walkable) {
 	// Stub — Phase 5
 	return 0;
@@ -704,6 +715,7 @@ void VoxelTerrain::_recompute_nav_config() {
 	_nav_mesh_manager->use_detail_mesh = _nav_use_detail_mesh;
 	_nav_mesh_manager->register_with_server = _nav_register_with_server;
 	_nav_mesh_manager->y_band_strip_radius = _nav_y_band_strip_radius;
+	_nav_mesh_manager->debug_chunk = _nav_debug_chunk;
 
 	// Sync navigation map cell size/height so edge stitching works correctly
 	if (_nav_mesh_manager->_nav_map_rid.is_valid()) {
@@ -2997,6 +3009,8 @@ void VoxelTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_nav_detail_sample_max_error"), &Self::get_nav_detail_sample_max_error);
 	ClassDB::bind_method(D_METHOD("set_nav_register_with_server", "enabled"), &Self::set_nav_register_with_server);
 	ClassDB::bind_method(D_METHOD("get_nav_register_with_server"), &Self::get_nav_register_with_server);
+	ClassDB::bind_method(D_METHOD("set_nav_debug_chunk", "chunk"), &Self::set_nav_debug_chunk);
+	ClassDB::bind_method(D_METHOD("get_nav_debug_chunk"), &Self::get_nav_debug_chunk);
 
 	ClassDB::bind_method(
 			D_METHOD("add_nav_obstacle", "collision_mesh", "transform", "walkable"),
@@ -3079,6 +3093,10 @@ void VoxelTerrain::_bind_methods() {
 			PropertyInfo(Variant::BOOL, "nav_register_with_server"),
 			"set_nav_register_with_server",
 			"get_nav_register_with_server");
+	ADD_PROPERTY(
+			PropertyInfo(Variant::VECTOR3I, "nav_debug_chunk"),
+			"set_nav_debug_chunk",
+			"get_nav_debug_chunk");
 #endif // VOXEL_ENABLE_NAVIGATION
 
 	ADD_GROUP("Materials", "");

@@ -158,6 +158,9 @@ public:
 	void set_nav_register_with_server(bool enabled);
 	bool get_nav_register_with_server() const;
 
+	void set_nav_debug_chunk(Vector3i chunk);
+	Vector3i get_nav_debug_chunk() const;
+
 	Array debug_get_nav_meshes() const;
 
 private:
@@ -466,6 +469,7 @@ private:
 	float _nav_detail_sample_dist = 1.2f;
 	float _nav_detail_sample_max_error = 0.1f;
 	bool _nav_register_with_server = true;
+	Vector3i _nav_debug_chunk = Vector3i(INT32_MAX, INT32_MAX, INT32_MAX);
 	std::shared_ptr<NavMeshManager> _nav_mesh_manager;
 #endif
 

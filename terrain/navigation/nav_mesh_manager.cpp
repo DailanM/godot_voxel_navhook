@@ -227,6 +227,7 @@ void NavMeshManager::_dispatch_nav_build(Vector3i chunk_pos, uint32_t generation
 	task->use_erosion = use_erosion;
 	task->use_detail_mesh = use_detail_mesh;
 	task->y_band_strip_radius = y_band_strip_radius;
+	task->debug_this_chunk = (chunk_pos == debug_chunk);
 
 	// Copy this chunk's triangles
 	task->chunk_triangles = _chunk_cache[chunk_pos].data;

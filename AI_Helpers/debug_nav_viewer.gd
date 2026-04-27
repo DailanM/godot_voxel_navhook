@@ -1,7 +1,7 @@
 # debug_nav_viewer.gd
 # Attach to any Node3D in the scene. Set terrain_path to your VoxelTerrain node.
-# Toggle "refresh" in the inspector to update the visualization.
-# Call refresh_nav() from the console to update manually.
+# At runtime, automatically visualizes nav meshes once generation stabilizes.
+# In the editor, toggle "refresh" in the inspector or call refresh_nav() manually.
 @tool
 extends Node3D
 
@@ -11,6 +11,14 @@ extends Node3D
 	set(v):
 		refresh = false
 		refresh_nav()
+
+@export_group("Auto-Detect (Runtime)")
+## Enable polling at runtime to auto-trigger once nav mesh count stabilizes.
+@export var auto_detect: bool = true
+## How long (seconds) the nav mesh count must stay unchanged before we draw.
+@export var settle_time: float = 2.0
+## Seconds between polls while waiting for generation to finish.
+@export var poll_interval: float = 0.5
 
 @export_group("Display")
 @export var show_faces: bool = true
@@ -31,6 +39,10 @@ extends Node3D
 ])
 
 var _instances: Array[MeshInstance3D] = []
+var _poll_timer: float = 0.0
+var _last_nav_count: int = -1
+var _stable_elapsed: float = 0.0
+var _auto_done: bool = false
 
 func refresh_nav() -> void:
 	_clear()
@@ -234,4 +246,44 @@ func _clear() -> void:
 	_instances.clear()
 
 func _ready() -> void:
-	pass
+	if Engine.is_editor_hint():
+		return
+	if auto_detect:
+		set_process(true)
+		print("debug_nav_viewer: waiting for nav mesh generation to finish...")
+
+
+func _process(delta: float) -> void:
+	if Engine.is_editor_hint() or _auto_done:
+		set_process(false)
+		return
+
+	_poll_timer += delta
+	if _poll_timer < poll_interval:
+		return
+	_poll_timer = 0.0
+
+	var terrain = get_node_or_null(terrain_path)
+	if terrain == null or not terrain.has_method("debug_get_nav_meshes"):
+		return
+
+	var count: int = terrain.debug_get_nav_meshes().size()
+
+	if count == 0:
+		_last_nav_count = 0
+		_stable_elapsed = 0.0
+		return
+
+	if count != _last_nav_count:
+		if _last_nav_count >= 0:
+			print("debug_nav_viewer: nav regions %d -> %d" % [_last_nav_count, count])
+		_last_nav_count = count
+		_stable_elapsed = 0.0
+		return
+
+	_stable_elapsed += poll_interval
+	if _stable_elapsed >= settle_time:
+		print("debug_nav_viewer: generation settled at %d regions, drawing..." % count)
+		_auto_done = true
+		set_process(false)
+		refresh_nav()

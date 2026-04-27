@@ -35,6 +35,7 @@ public:
 	// vertically-adjacent chunks produce bit-identical strip region IDs
 	// and their contour vertices line up at the seam.
 	int y_band_strip_radius = 2;
+	bool debug_this_chunk = false;
 
 	// Output
 	Ref<NavigationMesh> result_nav_mesh;
