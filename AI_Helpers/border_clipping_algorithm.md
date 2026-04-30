@@ -193,9 +193,10 @@ for each span i with flags[i] != 0 and flags[i] != 0xf:
     // Edge tessellation as post-processing (Step 2.4)
     tessellate(contour, maxEdgeLen)
 
-    // Store contour if valid (>= 3 vertices)
+    // Store contour if valid (>= 3 vertices, non-zero area)
     if contour.size() / 4 >= 3:
-        store contour in rcContourSet
+        if calcAreaOfPolygon2D(contour, contour.size() / 4) != 0:
+            store contour in rcContourSet
 ```
 
 ### Walk-and-Simplify State Machine
@@ -271,8 +272,10 @@ classification is needed.
 
 ### Step 2.1: Walking a Contour
 
-The walk follows stock `walkContour` mechanics (RecastContour.cpp:103-184): start
-at a span, find the first boundary edge, walk clockwise around the region.
+**Interior walks** follow stock `walkContour` mechanics (RecastContour.cpp:103-184):
+start at a span, find the first boundary edge, walk clockwise around the region.
+
+**Border walks** use modified mechanics described in Step 2.1.1 below.
 
 At each step, when an edge is a boundary edge (the flag bit for direction `dir` is
 set):
@@ -311,22 +314,13 @@ set):
    If not an endpoint: append to `segment[]` only if not `RC_BORDER_VERTEX`.
 
 5. **Flag clearing** after processing the vertex:
+
+   **Interior walk:** Always clear the flag for this edge (stock behavior):
    ```
-   if is_border_walk:
-       if chf.spans[i].reg & RC_BORDER_REG:
-           flags[i] &= ~(1 << dir)
-   else:
-       flags[i] &= ~(1 << dir)
+   flags[i] &= ~(1 << dir)
    ```
 
-   **Interior walk:** Always clear the flag for this edge (stock behavior).
-   **Border walk:** Only clear if the current span is a border region. The border
-   contour's boundary includes edges that face interior regions. The spans on the
-   interior side of those edges have their own flags that must be preserved for
-   the interior contour walks. The guard `chf.spans[i].reg & RC_BORDER_REG` is
-   defensive — the stock walk mechanic stays on spans of the region being traced,
-   so border walks only visit border spans. But the guard documents the intent:
-   interior span flags must never be cleared during a border walk.
+   **Border walk:** See Step 2.1.1 for flag clearing rules during border walks.
 
 6. Walk termination: stop when we return to the starting span `starti` with the
    starting direction `startDir`. Process the wrap-around segment
@@ -335,6 +329,55 @@ set):
 If no mandatory endpoints are found during the entire walk (SCANNING completes
 without finding one), fall back to the stock lower-left / upper-right bounding box
 initialization (stock simplifyContour lines 242-284).
+
+### Step 2.1.1: Border Walk Direction Reversal
+
+Border walks do not trace the full perimeter of the border region. They hug only
+the inner edge — the boundary where the border region meets interior regions —
+walking back and forth between mandatory vertices. Only border spans adjacent to
+at least one interior region have flags set (see Step 1), so the walk is confined
+to the innermost row of the border strip.
+
+The walk proceeds in two phases:
+
+**Outgoing phase (CW):** Starting from the initial span, the walk traces the inner
+edge clockwise, recording raw vertices at boundary edges facing interior regions.
+At T-junctions (where different interior regions meet at the chunk boundary), the
+walk follows the T inward to determine the vertex position. Flag bits for the
+inner-edge direction are cleared during this phase (marking spans as walked for the
+outer loop). Interior span flags are never cleared — the guard
+`chf.spans[i].reg & RC_BORDER_REG` ensures only border span flags are modified:
+```
+if chf.spans[i].reg & RC_BORDER_REG:
+    flags[i] &= ~(1 << dir)
+```
+
+**Direction reversal:** When the walk reaches a mandatory vertex — a chunk corner
+(transition between two different `RC_BORDER_REG` region IDs) or a hole-boundary
+vertex (where region 0 meets the border) — the walk reverses direction.
+
+**Return phase (CCW):** The walk traces back along the same inner edge in the
+opposite direction. T-junctions are NOT followed during the return phase. Flag bits
+are not cleared during this phase — the outgoing phase already marked these spans
+as walked.
+
+All raw vertices recorded on both phases are `RC_BORDER_VERTEX` (the 4-cell check
+sees two same-border cells and two non-border cells regardless of walk direction)
+and are excluded during simplification. After exclusion, the border contour retains
+only mandatory vertices:
+
+- **Chunk corner vertices:** NOT `RC_BORDER_VERTEX` because the two adjacent border
+  cells at a chunk corner have different region IDs (painted by different
+  `paintRectRegion` calls at RecastRegion.cpp:1575-1578), so `twoSameExts` fails.
+- **Hole-boundary T-junction vertices:** NOT `RC_BORDER_VERTEX` because region 0
+  is among the 4 cells, so `noZeros` fails.
+
+Portal edges between these mandatory vertices are straight lines with no
+intermediate vertices, matching the portal edges on adjacent interior contours and
+on the neighboring chunk.
+
+The walk terminates when it returns to the starting span and direction, as with
+interior walks. The wrap-around segment is processed per the state machine diagram.
 
 ### Step 2.2: Segment Simplification (max-deviation)
 
@@ -441,6 +484,20 @@ After the walk completes, contours with fewer than 3 vertices are discarded (sam
 as stock, RecastContour.cpp:938). This can happen when a region is almost entirely
 border-facing and most segments produce no non-border vertices.
 
+Additionally, contours with zero XZ area must be discarded after tessellation
+using `calcAreaOfPolygon2D` (RecastContour.cpp:453, O(n) shoelace formula). This
+catches degenerate contours that the vertex-count check misses — specifically,
+3+ collinear vertices from thin border-facing regions where `RC_BORDER_VERTEX`
+exclusion removes the vertices that would have given the contour width. These
+contours may have only 2 vertices after simplification (caught by the vertex-count
+check), but edge tessellation can re-inflate them by inserting collinear midpoints
+into the long simplified edge, producing 3+ vertices that pass the count check
+while remaining zero-area. The area check must run after tessellation.
+
+The ear-clipping triangulation in `rcBuildPolyMesh` (RecastMesh.cpp:338-450) does
+NOT discard zero-area contours — it produces degenerate triangles that survive
+into the poly mesh.
+
 ## Direction Independence Analysis
 
 The algorithm's correctness depends on adjacent regions (within a chunk) and
@@ -493,6 +550,22 @@ the `n/2` vs `(n+1)/2` adjustment selects the same vertex regardless of directio
 This is also stock behavior. Portal edges skip tessellation (midpoints would be
 `RC_BORDER_VERTEX`), so this analysis applies only to interior and outer-edge
 segments.
+
+### Triangulation and Polygon Merging
+
+Contour edges (including tessellated subdivisions) are unconditionally preserved
+through `rcBuildPolyMesh` (RecastMesh.cpp:989). The ear-clipping `triangulate`
+function (RecastMesh.cpp:338-450) only adds internal diagonals — every contour
+edge appears as an edge of exactly one output triangle. Polygon merging
+(`getPolyMergeValue`, RecastMesh.cpp:466) only removes shared internal diagonals,
+never contour boundary edges.
+
+Since no contour vertices carry the `RC_BORDER_VERTEX` flag (border vertices are
+excluded from contours entirely), the vertex-removal pass in `rcBuildPolyMesh`
+(RecastMesh.cpp:1227-1246) is a no-op — edge topology is fixed at triangulation
+time. In stock Recast, this removal step re-triangulates holes around removed
+vertices, which can change edge topology. By excluding border vertices at the
+contour level, this algorithm avoids that fragile fixup entirely.
 
 ## Edge Cases
 
