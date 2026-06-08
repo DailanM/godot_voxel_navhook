@@ -571,6 +571,9 @@ static WalkStopReason walkSegment(
 
 			// --- Detect mandatory transitions ---
 			// Mandatory: region or area-border flag changed from previous emission.
+			// Bug: since vertices are emmited on the side of the closest to the direvction we are traveling,
+			//      we need to check if the region of the next vertex is different from this one. I think we
+			//      can do this by breaking if either of these are true and not emiting this vertex.
 			bool isMandatoryNonBV = false;
 			bool isMandatoryBV = false;
 			if (state.prev_r >= 0) {
@@ -1319,11 +1322,12 @@ bool nav_build_contours(rcContext *ctx, const rcCompactHeightfield &chf,
 		float maxError, int maxEdgeLen, rcContourSet &cset) {
 	rcAssert(ctx);
 
-	const int w = chf.width;
-	const int h = chf.height;
+	const int w = chf.width;  // x width in xz plane
+	const int h = chf.height; // z width in xz plane
 	const int borderSize = chf.borderSize;
 
 	// --- Setup (stock lines 831-865) ---
+	// TODO: In our use case we should probably adjust the y coords for our chunk padding
 	rcVcopy(cset.bmin, chf.bmin);
 	rcVcopy(cset.bmax, chf.bmax);
 	if (borderSize > 0) {
@@ -1356,10 +1360,11 @@ bool nav_build_contours(rcContext *ctx, const rcCompactHeightfield &chf,
 	// --- Modified flag marking (stock lines 869-899) ---
 	// Stock zeros flags for ALL border-region spans. Modified to retain
 	// flags on border spans adjacent to at least one interior region.
-	for (int y = 0; y < h; ++y) {
-		for (int x = 0; x < w; ++x) {
-			const rcCompactCell &c = chf.cells[x + y * w];
-			for (int i = (int)c.index, ni = (int)(c.index + c.count); i < ni; ++i) {
+	for (int y = 0; y < h; ++y) {                                                        //
+		for (int x = 0; x < w; ++x) {                                                    // Iterate over all spans by iterating over
+			const rcCompactCell &c = chf.cells[x + y * w];                               // all spans in every xz (yx) column.
+			for (int i = (int)c.index, ni = (int)(c.index + c.count); i < ni; ++i) {     //
+				
 				const rcCompactSpan &s = chf.spans[i];
 				const unsigned short reg = chf.spans[i].reg;
 
@@ -1389,7 +1394,7 @@ bool nav_build_contours(rcContext *ctx, const rcCompactHeightfield &chf,
 				}
 
 				unsigned char res = 0;
-				for (int dir = 0; dir < 4; ++dir) {
+				for (int dir = 0; dir < 4; ++dir) { // Check what spans connected to this span is connected to (we also check border spans here)
 					unsigned short r = 0;
 					if (rcGetCon(s, dir) != RC_NOT_CONNECTED) {
 						const int ax = x + rcGetDirOffsetX(dir);
@@ -1410,10 +1415,10 @@ bool nav_build_contours(rcContext *ctx, const rcCompactHeightfield &chf,
 	rcIntArray verts(256);
 	rcIntArray simplified(64);
 
-	for (int y = 0; y < h; ++y) {
-		for (int x = 0; x < w; ++x) {
-			const rcCompactCell &c = chf.cells[x + y * w];
-			for (int i = (int)c.index, ni = (int)(c.index + c.count); i < ni; ++i) {
+	for (int y = 0; y < h; ++y) {                                                        //
+		for (int x = 0; x < w; ++x) {                                                    // Iterate over all spans by iterating over
+			const rcCompactCell &c = chf.cells[x + y * w];                               // all spans in every xz (yx) column.
+			for (int i = (int)c.index, ni = (int)(c.index + c.count); i < ni; ++i) {     //
 				if (flags[i] == 0 || flags[i] == 0xf) {
 					flags[i] = 0;
 					continue;
