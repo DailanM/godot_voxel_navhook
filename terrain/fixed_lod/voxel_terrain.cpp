@@ -1282,6 +1282,50 @@ void VoxelTerrain::post_edit_area(Box3i box_in_voxels, bool update_mesh) {
 	}
 }
 
+// We should think about whether we actually want this function in this repo at all.
+void VoxelTerrain::regenerate_area(Box3i box_in_voxels) {
+	// Worldgame addition (isosurfaceTerrainPlan.md Phase 3) — see header.
+	ZN_PROFILE_SCOPE();
+
+	box_in_voxels.clip(_data->get_bounds());
+	const Box3i block_box = box_in_voxels.downscaled(get_data_block_size());
+
+	// Evict without saving: stored voxels in the box are stale by definition
+	// on this path (the generator's output changed).
+	_data->unload_blocks(block_box, 0, nullptr);
+
+	// Re-request every evicted block still inside a viewer's data box, with
+	// the viewer refcount rebuilt the same way try_set_block_data does. The
+	// pending list is consumed by send_data_load_requests on the next
+	// process; generation responses schedule their own mesh updates
+	// (apply_data_block_response). Blocks outside every viewer simply
+	// regenerate on demand when next viewed.
+	block_box.for_each_cell([this](Vector3i bpos) {
+		if (_loading_blocks.find(bpos) != _loading_blocks.end()) {
+			// Already being loaded/generated. The in-flight task may carry
+			// pre-change output, but callers mutate generator state BEFORE
+			// calling this, so the window is the task's own runtime — accepted
+			// for the debug-edit scope this serves (a stale result is fixed by
+			// the next regenerate_area call).
+			return;
+		}
+		RefCount refcount;
+		for (unsigned int i = 0; i < _paired_viewers.size(); ++i) {
+			const PairedViewer &viewer = _paired_viewers[i];
+			if (viewer.state.data_box.contains(bpos)) {
+				refcount.add();
+			}
+		}
+		if (refcount.get() == 0) {
+			return;
+		}
+		LoadingBlock loading_block;
+		loading_block.viewers = refcount;
+		_loading_blocks.insert({ bpos, loading_block });
+		_blocks_pending_load.push_back(bpos);
+	});
+}
+
 void VoxelTerrain::_notification(int p_what) {
 	struct SetWorldAction {
 		World3D *world;
@@ -2856,6 +2900,10 @@ bool VoxelTerrain::_b_is_area_meshed(AABB aabb) const {
 	return is_area_meshed(Box3i(aabb.position, aabb.size));
 }
 
+void VoxelTerrain::_b_regenerate_area(Vector3i origin_in_voxels, Vector3i size_in_voxels) {
+	regenerate_area(Box3i(origin_in_voxels, size_in_voxels));
+}
+
 void VoxelTerrain::_bind_methods() {
 	using Self = VoxelTerrain;
 
@@ -2925,6 +2973,9 @@ void VoxelTerrain::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("has_data_block", "block_position"), &Self::has_data_block);
 	ClassDB::bind_method(D_METHOD("is_area_meshed", "area_in_voxels"), &Self::_b_is_area_meshed);
+	ClassDB::bind_method(
+			D_METHOD("regenerate_area", "origin_in_voxels", "size_in_voxels"), &Self::_b_regenerate_area
+	);
 
 	ClassDB::bind_method(D_METHOD("debug_set_draw_enabled", "enabled"), &Self::debug_set_draw_enabled);
 	ClassDB::bind_method(D_METHOD("debug_is_draw_enabled"), &Self::debug_is_draw_enabled);

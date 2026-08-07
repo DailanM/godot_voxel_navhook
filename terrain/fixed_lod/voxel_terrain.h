@@ -76,6 +76,16 @@ public:
 	void post_edit_voxel(Vector3i pos);
 	void post_edit_area(Box3i box_in_voxels, bool update_mesh);
 
+	// Worldgame addition (isosurfaceTerrainPlan.md Phase 3): area-scoped
+	// drop-and-regenerate. Evicts loaded data blocks intersecting the box
+	// WITHOUT saving them and re-requests their generation through the normal
+	// streaming path, so generator-side state changes (terrain modifications)
+	// become visible in already-loaded chunks. Unlike post_edit_area — the
+	// plumbing reference — this re-RUNS generation instead of re-reading
+	// stored voxels; engine-side voxel edits in the box are discarded by
+	// design (the generator is the source of truth on this path).
+	void regenerate_area(Box3i box_in_voxels);
+
 	void set_generate_collisions(bool enabled);
 	bool get_generate_collisions() const {
 		return _generate_collisions;
@@ -374,6 +384,7 @@ private:
 	void _b_rpc_receive_block(PackedByteArray data);
 	void _b_rpc_receive_area(PackedByteArray data);
 	bool _b_is_area_meshed(AABB aabb) const;
+	void _b_regenerate_area(Vector3i origin_in_voxels, Vector3i size_in_voxels);
 
 	VolumeID _volume_id;
 
